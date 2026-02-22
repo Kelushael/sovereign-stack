@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AMALLO — Sovereign Terminal</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --orange:#FF6B00;--blue:#89CFF0;--purple:#C084FC;
+  --lime:#BEFF00;--dark:#08030A;--dim:#1A0A00;
+}
+
+html,body{
+  height:100%;overflow:hidden;
+  background:var(--dark);
+  font-family:'Courier New',monospace;
+}
+
+/* ── CANVAS LAYERS ── */
+#matrix-canvas{
+  position:fixed;inset:0;z-index:0;opacity:0.07;pointer-events:none;
+}
+#particle-canvas{
+  position:fixed;inset:0;z-index:1;pointer-events:none;
+}
+
+/* ── SCANLINES ── */
+.scanlines{
+  position:fixed;inset:0;z-index:100;pointer-events:none;
+  background:repeating-linear-gradient(
+    0deg,
+    transparent,transparent 2px,
+    rgba(0,0,0,0.08) 2px,rgba(0,0,0,0.08) 4px
+  );
+}
+
+/* ── VIGNETTE ── */
+.vignette{
+  position:fixed;inset:0;z-index:99;pointer-events:none;
+  background:radial-gradient(ellipse at center,
+    transparent 50%,
+    rgba(0,0,0,0.7) 100%
+  );
+}
+
+/* ── TERMINAL WRAPPER ── */
+#app{
+  position:relative;z-index:10;
+  display:flex;flex-direction:column;
+  height:100vh;
+  border:1px solid rgba(137,207,240,0.15);
+  box-shadow:
+    0 0 80px rgba(255,107,0,0.08),
+    0 0 40px rgba(192,132,252,0.05),
+    inset 0 0 80px rgba(0,0,0,0.5);
+  animation:frame-breathe 4s ease-in-out infinite;
+}
+@keyframes frame-breathe{
+  0%,100%{box-shadow:0 0 60px rgba(255,107,0,0.06),0 0 30px rgba(192,132,252,0.04),inset 0 0 80px rgba(0,0,0,0.5)}
+  50%{box-shadow:0 0 100px rgba(255,107,0,0.12),0 0 60px rgba(192,132,252,0.08),inset 0 0 80px rgba(0,0,0,0.5)}
+}
+
+/* ── HEADER ── */
+#header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 20px;
+  border-bottom:1px solid rgba(137,207,240,0.1);
+  background:rgba(8,3,10,0.9);
+  backdrop-filter:blur(20px);
+  position:relative;overflow:hidden;
+}
+#header::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,
+    rgba(255,107,0,0.05) 0%,
+    transparent 30%,
+    transparent 70%,
+    rgba(192,132,252,0.05) 100%
+  );
+  animation:header-sweep 8s ease-in-out infinite alternate;
+}
+@keyframes header-sweep{
+  0%{opacity:0.5;transform:translateX(-10%)}
+  100%{opacity:1;transform:translateX(10%)}
+}
+
+.logo-text{
+  font-size:18px;font-weight:900;letter-spacing:8px;
+  position:relative;z-index:1;
+}
+.logo-text .l1{color:var(--blue)}
+.logo-text .l2{color:var(--purple)}
+.logo-text .l3{color:var(--orange)}
+.logo-text .l4{color:var(--blue)}
+.logo-text .l5{color:var(--lime)}
+.logo-text .l6{color:var(--purple)}
+.logo-text{
+  animation:glitch 6s ease-in-out infinite;
+}
+@keyframes glitch{
+  0%,90%,100%{text-shadow:none;transform:none}
+  92%{text-shadow:2px 0 var(--orange),-2px 0 var(--blue);transform:skewX(-1deg)}
+  94%{text-shadow:-3px 0 var(--purple),3px 0 var(--lime);transform:skewX(1deg)}
+  96%{text-shadow:1px 0 var(--blue),-1px 0 var(--orange);transform:none}
+  98%{text-shadow:none;transform:skewX(-0.5deg)}
+}
+
+.status-pills{
+  display:flex;gap:16px;align-items:center;
+  font-size:10px;letter-spacing:2px;
+  position:relative;z-index:1;
+}
+.pill{
+  display:flex;align-items:center;gap:6px;
+  color:rgba(255,255,255,0.4);
+}
+.pill .dot{
+  width:6px;height:6px;border-radius:50%;
+  animation:pill-pulse 2s ease-in-out infinite;
+}
+.pill.online .dot{background:var(--lime);box-shadow:0 0 8px var(--lime)}
+.pill.model .dot{background:var(--purple);box-shadow:0 0 8px var(--purple)}
+.pill.key .dot{background:var(--orange);box-shadow:0 0 8px var(--orange)}
+@keyframes pill-pulse{
+  0%,100%{opacity:1;transform:scale(1)}
+  50%{opacity:0.4;transform:scale(0.7)}
+}
+
+/* ── OUTPUT ── */
+#output{
+  flex:1;overflow-y:auto;
+  padding:20px;
+  scroll-behavior:smooth;
+}
+#output::-webkit-scrollbar{width:4px}
+#output::-webkit-scrollbar-track{background:transparent}
+#output::-webkit-scrollbar-thumb{background:rgba(137,207,240,0.2);border-radius:2px}
+
+.line{
+  margin-bottom:4px;line-height:1.6;font-size:13px;
+  animation:line-in 0.15s ease forwards;
+  opacity:0;transform:translateX(-4px);
+}
+@keyframes line-in{
+  to{opacity:1;transform:translateX(0)}
+}
+
+.line.system{color:rgba(137,207,240,0.6)}
+.line.user{color:var(--blue);font-weight:bold}
+.line.success{color:var(--lime);text-shadow:0 0 8px rgba(190,255,0,0.3)}
+.line.error{color:#FF4444}
+.line.warning{color:var(--orange)}
+.line.info{color:rgba(255,255,255,0.45)}
+.line.ai{
+  color:rgba(255,255,255,0.85);
+  border-left:2px solid var(--purple);
+  padding-left:12px;
+  margin-left:4px;
+}
+
+/* typing cursor in ai responses */
+.typing-cursor{
+  display:inline-block;width:8px;height:14px;
+  background:var(--purple);
+  animation:blink 0.7s step-end infinite;
+  vertical-align:middle;
+}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* ── ASCII ART ── */
+.ascii-banner{
+  color:rgba(255,107,0,0.35);
+  font-size:9px;line-height:1.2;
+  margin-bottom:16px;
+  white-space:pre;
+  animation:ascii-breathe 6s ease-in-out infinite;
+}
+@keyframes ascii-breathe{
+  0%,100%{color:rgba(255,107,0,0.25);text-shadow:none}
+  50%{color:rgba(255,107,0,0.5);text-shadow:0 0 20px rgba(255,107,0,0.3)}
+}
+
+/* ── MIC BUTTON ── */
+#mic-btn{
+  background:none;border:none;cursor:pointer;
+  width:34px;height:34px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  color:rgba(137,207,240,0.5);
+  border:1px solid rgba(137,207,240,0.15);
+  transition:all 0.2s;flex-shrink:0;
+  font-size:16px;
+}
+#mic-btn:hover{color:var(--blue);border-color:rgba(137,207,240,0.4);box-shadow:0 0 12px rgba(137,207,240,0.2)}
+#mic-btn.listening{
+  color:#FF4444;border-color:rgba(255,68,68,0.6);
+  box-shadow:0 0 16px rgba(255,68,68,0.4);
+  animation:mic-pulse 0.8s ease-in-out infinite;
+}
+@keyframes mic-pulse{
+  0%,100%{box-shadow:0 0 10px rgba(255,68,68,0.3)}
+  50%{box-shadow:0 0 25px rgba(255,68,68,0.7),0 0 50px rgba(255,68,68,0.3)}
+}
+
+/* ── DOWNLOAD LINK ── */
+.dl-btn{
+  display:inline-flex;align-items:center;gap:5px;
+  margin:6px 0 2px 16px;padding:4px 10px;
+  background:rgba(190,255,0,0.08);
+  border:1px solid rgba(190,255,0,0.3);
+  border-radius:4px;color:var(--lime);
+  font-size:11px;letter-spacing:1px;cursor:pointer;
+  text-decoration:none;font-family:'Courier New',monospace;
+  transition:all 0.2s;
+}
+.dl-btn:hover{background:rgba(190,255,0,0.18);box-shadow:0 0 12px rgba(190,255,0,0.3)}
+
+/* ── PLAY BUTTON ── */
+.play-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  margin-left:8px;cursor:pointer;
+  width:18px;height:18px;border-radius:50%;
+  background:rgba(192,132,252,0.15);
+  border:1px solid rgba(192,132,252,0.3);
+  color:var(--purple);font-size:8px;
+  transition:all 0.2s;vertical-align:middle;
+  flex-shrink:0;
+}
+.play-btn:hover{background:rgba(192,132,252,0.3);box-shadow:0 0 10px rgba(192,132,252,0.4)}
+.play-btn.speaking{
+  background:rgba(192,132,252,0.3);
+  box-shadow:0 0 12px rgba(192,132,252,0.5);
+  animation:play-spin 1s linear infinite;
+}
+@keyframes play-spin{
+  0%,100%{box-shadow:0 0 8px rgba(192,132,252,0.4)}
+  50%{box-shadow:0 0 20px rgba(192,132,252,0.8)}
+}
+
+/* ── INPUT AREA ── */
+#input-area{
+  padding:12px 20px;
+  border-top:1px solid rgba(137,207,240,0.08);
+  background:rgba(8,3,10,0.95);
+  display:flex;align-items:center;gap:10px;
+  position:relative;
+}
+#input-area::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,
+    transparent,var(--orange),var(--purple),var(--lime),transparent
+  );
+  opacity:0.3;
+  animation:input-line 4s linear infinite;
+  background-size:200% 100%;
+}
+@keyframes input-line{
+  0%{background-position:200% 0}
+  100%{background-position:-200% 0}
+}
+
+.prompt-symbol{
+  color:var(--lime);font-size:16px;font-weight:bold;
+  text-shadow:0 0 10px var(--lime);
+  animation:prompt-pulse 2s ease-in-out infinite;
+}
+@keyframes prompt-pulse{
+  0%,100%{text-shadow:0 0 8px var(--lime)}
+  50%{text-shadow:0 0 20px var(--lime),0 0 40px rgba(190,255,0,0.3)}
+}
+
+#cmd-input{
+  flex:1;background:transparent;border:none;outline:none;
+  color:var(--blue);font-family:'Courier New',monospace;
+  font-size:14px;caret-color:var(--lime);
+  text-shadow:0 0 8px rgba(137,207,240,0.4);
+}
+#cmd-input::placeholder{
+  color:rgba(255,255,255,0.1);font-style:italic;font-size:12px;
+}
+#cmd-input:focus{
+  text-shadow:0 0 12px rgba(137,207,240,0.6);
+}
+
+/* input glow on typing */
+#input-area.typing{
+  background:rgba(12,5,18,0.98);
+  box-shadow:0 -4px 20px rgba(137,207,240,0.06);
+}
+
+/* ── MODEL SELECTOR ── */
+#model-selector{
+  display:none;position:absolute;bottom:60px;left:20px;right:20px;
+  background:rgba(8,3,10,0.97);
+  border:1px solid rgba(192,132,252,0.4);
+  border-radius:6px;
+  box-shadow:0 0 40px rgba(192,132,252,0.2);
+  max-height:280px;overflow-y:auto;
+  z-index:200;
+}
+#model-selector.open{display:block}
+.model-selector-header{
+  padding:8px 14px;font-size:10px;letter-spacing:2px;
+  color:var(--purple);border-bottom:1px solid rgba(192,132,252,0.2);
+  display:flex;justify-content:space-between;
+}
+.model-item{
+  display:flex;align-items:center;gap:12px;
+  padding:8px 14px;cursor:pointer;
+  font-size:13px;color:rgba(255,255,255,0.6);
+  border-bottom:1px solid rgba(255,255,255,0.03);
+  transition:background 0.1s;
+}
+.model-item:hover,.model-item.focused{
+  background:rgba(192,132,252,0.1);color:rgba(255,255,255,0.9);
+}
+.model-item.focused{border-left:2px solid var(--purple)}
+.model-item .check{
+  width:14px;height:14px;border-radius:2px;
+  border:1px solid rgba(192,132,252,0.4);
+  display:flex;align-items:center;justify-content:center;
+  font-size:10px;flex-shrink:0;
+}
+.model-item.selected .check{
+  background:var(--purple);border-color:var(--purple);color:#000;
+}
+.model-item .badge{
+  margin-left:auto;font-size:9px;letter-spacing:1px;
+  color:var(--lime);opacity:0.6;
+}
+
+/* ── NODE INFO BAR ── */
+#node-bar{
+  display:flex;justify-content:space-between;
+  padding:4px 20px;
+  font-size:9px;letter-spacing:2px;
+  color:rgba(255,255,255,0.1);
+  border-top:1px solid rgba(255,255,255,0.03);
+  background:rgba(0,0,0,0.4);
+}
+#latency{animation:latency-jitter 3s ease-in-out infinite}
+@keyframes latency-jitter{
+  0%,100%{content:''}
+  50%{color:rgba(190,255,0,0.3)}
+}
+</style>
+</head>
+<body>
+
+<!-- CANVAS LAYERS -->
+<canvas id="matrix-canvas"></canvas>
+<canvas id="particle-canvas"></canvas>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- TERMINAL -->
+<div id="app">
+  <div id="header">
+    <div class="logo-text">
+      <span class="l1">A</span><span class="l2">M</span><span class="l3">A</span><span class="l4">L</span><span class="l5">L</span><span class="l6">O</span>
+      <span style="color:rgba(255,255,255,0.2);font-size:11px;letter-spacing:4px;margin-left:12px">SOVEREIGN SHELL</span>
+    </div>
+    <div class="status-pills">
+      <div class="pill online"><div class="dot"></div><span>NODE ZERO</span></div>
+      <div class="pill model"><div class="dot"></div><span id="model-label">QWEN2.5</span></div>
+      <div class="pill key"><div class="dot"></div><span id="latency-label">SOVEREIGN</span></div>
+    </div>
+  </div>
+
+  <div id="output"></div>
+
+  <div id="model-selector"></div>
+  <div id="input-area">
+    <span class="prompt-symbol">❯</span>
+    <input id="cmd-input" type="text" placeholder="awaiting sovereign command..." autocomplete="off" spellcheck="false" autofocus />
+    <button id="mic-btn" title="Voice input (hold to speak)">🎙</button>
+  </div>
+
+  <div id="node-bar">
+    <span>axismundi.fun · 76.13.24.113</span>
+    <span id="latency">latency: <span id="ms">—</span>ms</span>
+    <span>amallo-node-0 · unbolted</span>
+  </div>
+</div>
+
+<script>
+// ── CONFIG ──────────────────────────────────────────────────
+const BASE = 'https://axismundi.fun';
+let SOV_KEY = localStorage.getItem('amallo_key') || '';
+let cmdHistory = JSON.parse(localStorage.getItem('amallo_history') || '[]');
+let histIdx = -1;
+let currentModel = 'Qwen2.5-Coder';
+
+// ── MATRIX RAIN ─────────────────────────────────────────────
+const mCvs = document.getElementById('matrix-canvas');
+const mCtx = mCvs.getContext('2d');
+let cols, drops;
+function initMatrix(){
+  mCvs.width = window.innerWidth;
+  mCvs.height = window.innerHeight;
+  cols = Math.floor(mCvs.width / 16);
+  drops = Array(cols).fill(1);
+}
+function drawMatrix(){
+  mCtx.fillStyle = 'rgba(8,3,10,0.05)';
+  mCtx.fillRect(0,0,mCvs.width,mCvs.height);
+  const chars = 'アイウエオカキクケコ0123456789AMALLO∞⬡⬢';
+  drops.forEach((y,i)=>{
+    const ch = chars[Math.floor(Math.random()*chars.length)];
+    const r = Math.random();
+    if(r < 0.33) mCtx.fillStyle='rgba(255,107,0,0.8)';
+    else if(r < 0.66) mCtx.fillStyle='rgba(192,132,252,0.8)';
+    else mCtx.fillStyle='rgba(190,255,0,0.8)';
+    mCtx.font='12px monospace';
+    mCtx.fillText(ch, i*16, y*16);
+    if(y*16 > mCvs.height && Math.random() > 0.975) drops[i]=0;
+    drops[i]++;
+  });
+}
+initMatrix();
+setInterval(drawMatrix, 60);
+
+// ── PARTICLES ────────────────────────────────────────────────
+const pCvs = document.getElementById('particle-canvas');
+const pCtx = pCvs.getContext('2d');
+const COLORS = ['rgba(255,107,0,','rgba(137,207,240,','rgba(192,132,252,','rgba(190,255,0,'];
+let particles = [];
+function initParticles(){
+  pCvs.width = window.innerWidth;
+  pCvs.height = window.innerHeight;
+  particles = Array.from({length:60},()=>({
+    x: Math.random()*pCvs.width,
+    y: Math.random()*pCvs.height,
+    vx:(Math.random()-0.5)*0.4,
+    vy:(Math.random()-0.5)*0.4,
+    r: Math.random()*2+0.5,
+    col: COLORS[Math.floor(Math.random()*COLORS.length)],
+    a: Math.random()*0.4+0.1,
+    pulse: Math.random()*Math.PI*2
+  }));
+}
+function drawParticles(){
+  pCtx.clearRect(0,0,pCvs.width,pCvs.height);
+  particles.forEach(p=>{
+    p.pulse += 0.02;
+    const alpha = p.a*(0.6+0.4*Math.sin(p.pulse));
+    pCtx.beginPath();
+    pCtx.arc(p.x,p.y,p.r,0,Math.PI*2);
+    pCtx.fillStyle = p.col+alpha+')';
+    pCtx.fill();
+    p.x+=p.vx; p.y+=p.vy;
+    if(p.x<0)p.x=pCvs.width;
+    if(p.x>pCvs.width)p.x=0;
+    if(p.y<0)p.y=pCvs.height;
+    if(p.y>pCvs.height)p.y=0;
+  });
+}
+initParticles();
+setInterval(drawParticles, 30);
+
+window.addEventListener('resize',()=>{initMatrix();initParticles()});
+
+// ── LATENCY PING ─────────────────────────────────────────────
+async function pingLatency(){
+  const t = Date.now();
+  try{
+    await fetch(BASE+'/health',{cache:'no-store'});
+    document.getElementById('ms').textContent = Date.now()-t;
+  }catch(e){
+    document.getElementById('ms').textContent = '?';
+  }
+}
+pingLatency();
+setInterval(pingLatency,5000);
+
+// ── OUTPUT ───────────────────────────────────────────────────
+const out = document.getElementById('output');
+
+function addLine(text, type='info', delay=0){
+  return new Promise(res=>{
+    setTimeout(()=>{
+      const d = document.createElement('div');
+      d.className = 'line '+type;
+      d.textContent = text;
+      out.appendChild(d);
+      out.scrollTop = out.scrollHeight;
+      res();
+    }, delay);
+  });
+}
+
+async function typeWriter(text, type='ai'){
+  const d = document.createElement('div');
+  d.className = 'line '+type;
+  d.style.display = 'flex';
+  d.style.alignItems = 'flex-start';
+  d.style.gap = '8px';
+
+  const textSpan = document.createElement('span');
+  textSpan.style.flex = '1';
+  const cursor = document.createElement('span');
+  cursor.className = 'typing-cursor';
+
+  d.appendChild(textSpan);
+  out.appendChild(d);
+  out.scrollTop = out.scrollHeight;
+
+  for(const ch of text){
+    textSpan.textContent += ch;
+    textSpan.appendChild(cursor);
+    out.scrollTop = out.scrollHeight;
+    await new Promise(r=>setTimeout(r, Math.random()*18+4));
+  }
+  cursor.remove();
+
+  // add play button after typing completes
+  const playBtn = document.createElement('button');
+  playBtn.className = 'play-btn';
+  playBtn.textContent = '▶';
+  playBtn.title = 'Read aloud';
+  playBtn.style.marginTop = '3px';
+  playBtn.addEventListener('click', ()=>speakText(text, playBtn));
+  d.appendChild(playBtn);
+}
+
+// ── BOOT SEQUENCE ────────────────────────────────────────────
+async function boot(){
+  const ascii = `   _   __  __ _   _    _    _     _    ___
+  /_\\ |  \\/  /_\\ | |  | |  / \\   /_\\  / _ \\
+ //_\\\\| |\\/| //_\\\\| |__| |_/ _ \\ //_\\ \\_, /
+/  _  \\_|  |_/  _  \\____\\____/ \\ \\_/  /_/\\__\\`;
+  const pre = document.createElement('pre');
+  pre.className='ascii-banner';
+  pre.textContent=ascii;
+  out.appendChild(pre);
+
+  const msgs = [
+    ['AMALLO SOVEREIGN TERMINAL v2.0.0','system'],
+    ['','system'],
+    ['Initializing node identity...','info'],
+    ['  ✔ Node: amallo-node-0','success'],
+    ['  ✔ Host: axismundi.fun (76.13.24.113)','success'],
+    ['  ✔ Model: Qwen2.5-Coder-7B loaded','success'],
+    ['  ✔ Inference: llama.cpp backend','success'],
+    ['','info'],
+  ];
+  for(let i=0;i<msgs.length;i++){
+    await addLine(msgs[i][0],msgs[i][1],i*120);
+  }
+
+  if(!SOV_KEY){
+    await addLine('  ⚠ No SOV key found. Type: getkey yourname','warning',msgs.length*120);
+  } else {
+    await addLine('  ✔ SOV key loaded: '+SOV_KEY.slice(0,12)+'...','success',msgs.length*120);
+  }
+
+  setTimeout(async()=>{
+    await addLine('','info');
+    await addLine('Type help for commands. Type anything to talk to the node.','info');
+  }, msgs.length*120+200);
+}
+
+// ── COMMANDS ─────────────────────────────────────────────────
+async function handleCmd(raw){
+  const cmd = raw.trim();
+  const lower = cmd.toLowerCase();
+  addLine('❯ '+cmd,'user');
+
+  // local commands
+  if(lower==='clear'){out.innerHTML='';return}
+
+  if(lower==='help'){
+    const cmds=[
+      ['help              ','this menu'],
+      ['clear             ','wipe buffer'],
+      ['getkey [name]     ','generate your SOV key'],
+      ['setkey [SOV-KEY]  ','load existing key'],
+      ['status            ','node health + model info'],
+      ['model [name]      ','switch model (qwen/mistral/llama/wizard/nano)'],
+      ['models            ','list available models'],
+      ['save [name]       ','download last AI response as a file'],
+      ['/addcmd [n] [cmd] ','create a custom shortcut command'],
+      ['shell             ','raw bash passthrough (coming)'],
+      ['[anything else]   ','talk to the sovereign node'],
+    ];
+    await addLine('── SOVEREIGN COMMANDS ─────────────────────','system');
+    for(const [c,d] of cmds) await addLine('  '+c+d,'info');
+    await addLine('───────────────────────────────────────────','system');
+    return;
+  }
+
+  if(lower.startsWith('getkey')){
+    const name = cmd.split(' ')[1] || 'user';
+    try{
+      const r = await fetch(BASE+'/amallo/keys/create',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({identity:name,role:'user'})
+      });
+      const d = await r.json();
+      SOV_KEY = d.key;
+      localStorage.setItem('amallo_key',SOV_KEY);
+      await addLine('✔ Key generated for: '+d.identity,'success');
+      await addLine('  '+SOV_KEY,'system');
+      await addLine('  Saved to browser. Do not lose this.','warning');
+    }catch(e){
+      await addLine('✗ Failed: '+e.message,'error');
+    }
+    return;
+  }
+
+  if(lower.startsWith('setkey')){
+    SOV_KEY = cmd.split(' ')[1]||'';
+    localStorage.setItem('amallo_key',SOV_KEY);
+    await addLine('✔ Key set: '+SOV_KEY.slice(0,16)+'...','success');
+    return;
+  }
+
+  if(lower==='status'){
+    if(!SOV_KEY){await addLine('✗ No key. Run: getkey yourname','error');return}
+    try{
+      addLine('Scanning node...','info');
+      const r = await fetch(BASE+'/amallo/status',{
+        headers:{'Authorization':'Bearer '+SOV_KEY}
+      });
+      const d = await r.json();
+      await addLine('── NODE STATUS ────────────────────────────','system');
+      await addLine('  Node:    '+d.node,'success');
+      await addLine('  Host:    '+d.host,'info');
+      await addLine('  Model:   '+d.model,'info');
+      await addLine('  Disk:    '+d.disk_free_gb+' GB free','info');
+      await addLine('  Sovereign: '+d.sovereign,'success');
+      await addLine('  Operator: '+d.operator,'success');
+      await addLine('  Models:','info');
+      (d.models_available||[]).forEach(m=>addLine('    ◆ '+m,'info'));
+      await addLine('──────────────────────────────────────────','system');
+    }catch(e){await addLine('✗ '+e.message,'error')}
+    return;
+  }
+
+  if(lower==='models'){
+    if(!SOV_KEY){await addLine('✗ No key','error');return}
+    try{
+      const r=await fetch(BASE+'/v1/models',{headers:{'Authorization':'Bearer '+SOV_KEY}});
+      const d=await r.json();
+      const list=(d.data||[]).map(m=>m.id);
+      if(list.length){ await addLine('↑↓ navigate · ENTER to select','info'); openModelSelector(list); }
+      else await addLine('No models ready yet — they may still be pulling','warning');
+    }catch(e){await addLine('✗ '+e.message,'error')}
+    return;
+  }
+
+  if(lower.startsWith('model ')){
+    if(!SOV_KEY){await addLine('✗ No key','error');return}
+    const name = cmd.slice(6).trim();
+    try{
+      const r=await fetch(BASE+'/amallo/model',{
+        method:'POST',headers:{'Authorization':'Bearer '+SOV_KEY,'Content-Type':'application/json'},
+        body:JSON.stringify({model:name})
+      });
+      const d=await r.json();
+      if(d.switched){
+        currentModel=d.model;
+        document.getElementById('model-label').textContent=d.model.split('-')[0].toUpperCase();
+        await addLine('✔ Switched to: '+d.model,'success');
+      }else{
+        await addLine('✗ '+d.model,'error');
+      }
+    }catch(e){await addLine('✗ '+e.message,'error')}
+    return;
+  }
+
+  // ── /addcmd ──
+  if(lower.startsWith('/addcmd')){
+    const parts=cmd.slice(7).trim().split(' ');
+    const name=parts[0]; const action=parts.slice(1).join(' ');
+    if(!name||!action){await addLine('Usage: /addcmd [name] [what it does]','warning');return;}
+    customCmds[name.toLowerCase()]={action,created:Date.now()};
+    saveCustomCmds();
+    await addLine('✔ Command added: /'+name+' → "'+action+'"','success');
+    await addLine('  Now type /'+name+' to run it','info');
+    return;
+  }
+
+  // ── custom commands ──
+  const customKey = lower.startsWith('/') ? lower.slice(1).split(' ')[0] : null;
+  if(customKey && customCmds[customKey]){
+    const action = customCmds[customKey].action;
+    await addLine('▶ '+action,'info');
+    // treat action as a new command
+    await handleCmd(action + ' ' + cmd.slice(customKey.length+1).trim());
+    return;
+  }
+
+  // ── save / download ──
+  if(lower.startsWith('save') || lower.startsWith('download')){
+    const fname = cmd.split(' ')[1] || 'amallo-output';
+    if(!lastAIText){await addLine('✗ No AI response to save yet','error');return;}
+    addDownloadLine(lastAIText, fname);
+    await addLine('✔ Click the link above to download','success');
+    return;
+  }
+
+  // ── INFERENCE ──
+  if(!SOV_KEY){
+    await addLine('✗ No SOV key. Run: getkey yourname','error');
+    return;
+  }
+
+  const pingStart = Date.now();
+  const thinkLine = document.createElement('div');
+  thinkLine.className='line info';
+  thinkLine.textContent='◈ thinking';
+  out.appendChild(thinkLine);
+  const thinking = setInterval(()=>{
+    const dots='.'.repeat((Date.now()/300|0)%4);
+    thinkLine.textContent='◈ thinking'+dots;
+    out.scrollTop=out.scrollHeight;
+  },100);
+
+  try{
+    const r=await fetch(BASE+'/v1/chat/completions',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+SOV_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'current',
+        messages:[{role:'user',content:cmd}],
+        max_tokens:1024
+      })
+    });
+    const d=await r.json();
+    clearInterval(thinking);
+    thinkLine.remove();
+    const ms = Date.now()-pingStart;
+    const reply = d.choices?.[0]?.message?.content || d.error || JSON.stringify(d);
+    lastAIText = reply;
+    await typeWriter(reply,'ai');
+    // auto download button if response looks like a script
+    if(reply.includes('#!/') || (reply.includes('\n') && (reply.includes('def ') || reply.includes('function ') || reply.includes('apt') || reply.includes('pip ')))){
+      addDownloadLine(reply, 'amallo-script');
+    }
+    await addLine('  ['+d.model+' · '+ms+'ms · type "save [name]" to download]','info');
+  }catch(e){
+    clearInterval(thinking);
+    thinkLine.remove();
+    await addLine('✗ '+e.message,'error');
+  }
+}
+
+// ── INPUT HANDLING ────────────────────────────────────────────
+const input = document.getElementById('cmd-input');
+const inputArea = document.getElementById('input-area');
+
+input.addEventListener('input',()=>{
+  if(input.value) inputArea.classList.add('typing');
+  else inputArea.classList.remove('typing');
+});
+
+input.addEventListener('keydown',async e=>{
+  if(e.key==='Enter'){
+    const v=input.value.trim();
+    if(!v) return;
+    cmdHistory.unshift(v);
+    if(cmdHistory.length>100) cmdHistory.pop();
+    localStorage.setItem('amallo_history',JSON.stringify(cmdHistory));
+    histIdx=-1;
+    input.value='';
+    inputArea.classList.remove('typing');
+    await handleCmd(v);
+  } else if(e.key==='ArrowUp'){
+    e.preventDefault();
+    if(histIdx<cmdHistory.length-1){
+      histIdx++;
+      input.value=cmdHistory[histIdx];
+    }
+  } else if(e.key==='ArrowDown'){
+    e.preventDefault();
+    if(histIdx>0){histIdx--;input.value=cmdHistory[histIdx];}
+    else{histIdx=-1;input.value='';}
+  } else if(e.key==='Tab'){
+    e.preventDefault();
+    const cmds=['help','clear','getkey ','setkey ','status','models','model ','save ','download ','/addcmd '];
+    const match=cmds.find(c=>c.startsWith(input.value));
+    if(match) input.value=match;
+  }
+});
+
+document.addEventListener('keydown',e=>{
+  if(document.activeElement!==input && !e.ctrlKey && !e.metaKey && e.key.length===1){
+    input.focus();
+  }
+});
+
+// ── DOWNLOAD HELPER ───────────────────────────────────────────
+let lastAIText = '';
+function makeDownloadLink(text, suggestedName){
+  const ext = text.trim().startsWith('#!/') ? text.split('\n')[0].includes('python') ? '.py' : '.sh'
+              : text.includes('def ') || text.includes('import ') ? '.py'
+              : text.includes('function ') || text.includes('const ') ? '.js'
+              : '.txt';
+  const fname = (suggestedName || 'amallo-script') + ext;
+  const blob = new Blob([text], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = fname;
+  a.className = 'dl-btn';
+  a.innerHTML = '⬇ ' + fname;
+  a.addEventListener('click',()=>setTimeout(()=>URL.revokeObjectURL(url),2000));
+  return a;
+}
+
+function addDownloadLine(text, name){
+  const wrapper = document.createElement('div');
+  wrapper.style.paddingLeft='16px';
+  wrapper.appendChild(makeDownloadLink(text, name));
+  out.appendChild(wrapper);
+  out.scrollTop = out.scrollHeight;
+}
+
+// ── MODEL SELECTOR ────────────────────────────────────────────
+let selectorOpen = false;
+let selectorModels = [];
+let selectorIdx = 0;
+
+function openModelSelector(modelList){
+  selectorModels = modelList;
+  selectorIdx = 0;
+  const sel = document.getElementById('model-selector');
+  sel.innerHTML = `<div class="model-selector-header">
+    <span>SELECT MODEL</span>
+    <span style="color:rgba(255,255,255,0.3)">↑↓ navigate · ENTER select · ESC close</span>
+  </div>`;
+  modelList.forEach((m,i)=>{
+    const item = document.createElement('div');
+    item.className = 'model-item' + (i===0?' focused':'');
+    item.dataset.idx = i;
+    item.innerHTML = `<div class="check">${m===currentModel?'✓':''}</div><span>${m}</span>`;
+    item.addEventListener('click',()=>{ selectModel(m); closeSelector(); });
+    sel.appendChild(item);
+  });
+  sel.classList.add('open');
+  selectorOpen = true;
+  document.addEventListener('keydown', selectorKeyHandler);
+}
+
+function closeSelector(){
+  document.getElementById('model-selector').classList.remove('open');
+  selectorOpen = false;
+  document.removeEventListener('keydown', selectorKeyHandler);
+  input.focus();
+}
+
+function selectorKeyHandler(e){
+  if(!selectorOpen) return;
+  const items = document.querySelectorAll('.model-item');
+  if(e.key==='ArrowDown'){e.preventDefault();selectorIdx=Math.min(selectorIdx+1,selectorModels.length-1);}
+  else if(e.key==='ArrowUp'){e.preventDefault();selectorIdx=Math.max(selectorIdx-1,0);}
+  else if(e.key==='Enter'){e.preventDefault();selectModel(selectorModels[selectorIdx]);closeSelector();return;}
+  else if(e.key==='Escape'){closeSelector();return;}
+  items.forEach((it,i)=>it.classList.toggle('focused',i===selectorIdx));
+  items[selectorIdx]?.scrollIntoView({block:'nearest'});
+}
+
+async function selectModel(name){
+  if(!SOV_KEY){await addLine('✗ No key','error');return;}
+  try{
+    const r=await fetch(BASE+'/amallo/model',{
+      method:'POST',headers:{'Authorization':'Bearer '+SOV_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({model:name})
+    });
+    const d=await r.json();
+    currentModel=d.model;
+    document.getElementById('model-label').textContent=d.model.split(':')[0].split('-')[0].toUpperCase().slice(0,8);
+    await addLine('✔ Model: '+d.model,'success');
+  }catch(e){await addLine('✗ '+e.message,'error')}
+}
+
+// ── CUSTOM COMMANDS ───────────────────────────────────────────
+let customCmds = JSON.parse(localStorage.getItem('amallo_cmds')||'{}');
+
+function saveCustomCmds(){
+  localStorage.setItem('amallo_cmds',JSON.stringify(customCmds));
+}
+
+// ── TTS ───────────────────────────────────────────────────────
+let currentUtterance = null;
+function speakText(text, btn){
+  if(!window.speechSynthesis) return;
+  // stop any current speech
+  if(currentUtterance){
+    window.speechSynthesis.cancel();
+    document.querySelectorAll('.play-btn.speaking').forEach(b=>b.classList.remove('speaking'));
+    if(currentUtterance._btn === btn){
+      currentUtterance = null;
+      return; // toggle off
+    }
+  }
+  const utter = new SpeechSynthesisUtterance(text);
+  utter._btn = btn;
+  utter.rate = 1.05;
+  utter.pitch = 0.9;
+  // pick a slightly deeper voice if available
+  const voices = window.speechSynthesis.getVoices();
+  const preferred = voices.find(v=>v.name.includes('Google UK English Male'))
+    || voices.find(v=>v.name.toLowerCase().includes('male'))
+    || voices[0];
+  if(preferred) utter.voice = preferred;
+  utter.onstart = ()=>{ btn.textContent='⏹'; btn.classList.add('speaking'); };
+  utter.onend = ()=>{ btn.textContent='▶'; btn.classList.remove('speaking'); currentUtterance=null; };
+  utter.onerror = ()=>{ btn.textContent='▶'; btn.classList.remove('speaking'); currentUtterance=null; };
+  currentUtterance = utter;
+  window.speechSynthesis.speak(utter);
+}
+
+// ── STT ───────────────────────────────────────────────────────
+const micBtn = document.getElementById('mic-btn');
+let recognition = null;
+let isListening = false;
+
+function initSTT(){
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SpeechRecognition){
+    micBtn.title = 'Speech recognition not supported in this browser';
+    micBtn.style.opacity = '0.3';
+    micBtn.style.cursor = 'not-allowed';
+    return;
+  }
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  recognition.onstart = ()=>{
+    isListening = true;
+    micBtn.classList.add('listening');
+    micBtn.textContent = '🔴';
+    input.placeholder = 'listening...';
+  };
+
+  recognition.onresult = (e)=>{
+    let interim = '';
+    let final = '';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      if(e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    input.value = (final || interim).trim();
+    inputArea.classList.add('typing');
+  };
+
+  recognition.onend = ()=>{
+    isListening = false;
+    micBtn.classList.remove('listening');
+    micBtn.textContent = '🎙';
+    input.placeholder = 'awaiting sovereign command...';
+    // auto-submit if we got something
+    const v = input.value.trim();
+    if(v){
+      cmdHistory.unshift(v);
+      if(cmdHistory.length>100) cmdHistory.pop();
+      localStorage.setItem('amallo_history',JSON.stringify(cmdHistory));
+      histIdx=-1;
+      input.value='';
+      inputArea.classList.remove('typing');
+      handleCmd(v);
+    }
+  };
+
+  recognition.onerror = (e)=>{
+    isListening = false;
+    micBtn.classList.remove('listening');
+    micBtn.textContent = '🎙';
+    input.placeholder = 'awaiting sovereign command...';
+    if(e.error !== 'no-speech'){
+      addLine('✗ mic: '+e.error,'error');
+    }
+  };
+}
+
+micBtn.addEventListener('click',()=>{
+  if(!recognition) initSTT();
+  if(!recognition) return;
+  if(isListening){
+    recognition.stop();
+  } else {
+    try{ recognition.start(); }
+    catch(e){ addLine('✗ mic: '+e.message,'error'); }
+  }
+});
+
+// lazy-init STT on first interaction
+initSTT();
+
+// ── BOOT ─────────────────────────────────────────────────────
+boot();
+</script>
+</body>
+</html>

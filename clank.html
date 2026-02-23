@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLANK — Amallo Sovereign Bridge</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Consolas', monospace;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+            color: #00ffff;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px 20px;
+            border-bottom: 2px solid #00ffff;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 1.8em;
+            text-shadow: 0 0 10px #00ffff;
+        }
+
+        .header .status {
+            color: #888;
+            font-size: 0.85em;
+        }
+
+        .status.connected { color: #00ff00; }
+        .status.error { color: #ff0000; }
+
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            padding: 15px;
+            border-radius: 10px;
+            max-width: 80%;
+            animation: fadeIn 0.3s ease-in;
+            line-height: 1.6;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user {
+            background: rgba(0, 100, 200, 0.3);
+            border-left: 4px solid #0088ff;
+            align-self: flex-end;
+        }
+
+        .message.assistant {
+            background: rgba(0, 255, 255, 0.1);
+            border-left: 4px solid #00ffff;
+            align-self: flex-start;
+        }
+
+        .vision-preview {
+            max-width: 400px;
+            border-radius: 5px;
+            margin-top: 10px;
+            border: 2px solid #ff00ff;
+        }
+
+        .input-container {
+            padding: 15px 20px;
+            background: rgba(0, 0, 0, 0.8);
+            border-top: 2px solid #00ffff;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .input-container input {
+            flex: 1;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid #00ffff;
+            border-radius: 5px;
+            color: #00ffff;
+            font-family: 'Consolas', monospace;
+            font-size: 1em;
+        }
+
+        .input-container input:focus {
+            outline: none;
+            box-shadow: 0 0 10px #00ffff;
+        }
+
+        .btn {
+            padding: 12px 20px;
+            background: rgba(0, 255, 255, 0.2);
+            border: 1px solid #00ffff;
+            border-radius: 5px;
+            color: #00ffff;
+            cursor: pointer;
+            font-family: 'Consolas', monospace;
+            transition: all 0.3s;
+            font-size: 0.9em;
+        }
+
+        .btn:hover {
+            background: rgba(0, 255, 255, 0.4);
+            box-shadow: 0 0 15px #00ffff;
+        }
+
+        .btn.active {
+            background: rgba(255, 0, 255, 0.3);
+            border-color: #ff00ff;
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .thinking {
+            display: none;
+            color: #ffaa00;
+            font-style: italic;
+            text-align: center;
+            padding: 10px;
+        }
+
+        .thinking.active {
+            display: block;
+        }
+
+        #videoPreview {
+            position: fixed;
+            bottom: 120px;
+            right: 20px;
+            width: 480px;
+            height: 360px;
+            border: 3px solid #ff00ff;
+            border-radius: 10px;
+            display: none;
+            object-fit: cover;
+            box-shadow: 0 0 20px rgba(255, 0, 255, 0.5);
+        }
+
+        #videoPreview.active {
+            display: block;
+        }
+
+        .config-panel {
+            position: fixed;
+            top: 70px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.98);
+            padding: 25px;
+            border: 2px solid #00ffff;
+            border-radius: 10px;
+            max-width: 450px;
+            max-height: 80vh;
+            overflow-y: auto;
+            z-index: 1000;
+            box-shadow: 0 0 30px rgba(0, 255, 255, 0.5);
+        }
+
+        .config-panel.hidden {
+            display: none;
+        }
+
+        .config-panel h3 {
+            color: #00ffff;
+            margin-bottom: 20px;
+            text-align: center;
+            font-size: 1.3em;
+        }
+
+        .api-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            border: 1px solid rgba(0, 255, 255, 0.3);
+        }
+
+        .api-section h4 {
+            color: #ff00ff;
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+
+        .config-panel input, .config-panel select {
+            width: 100%;
+            padding: 10px;
+            margin: 8px 0;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid #00ffff;
+            color: #00ffff;
+            font-family: 'Consolas', monospace;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+
+        .config-panel label {
+            display: block;
+            margin-top: 12px;
+            font-size: 0.85em;
+            color: #00ffff;
+        }
+
+        .toggle-config {
+            position: fixed;
+            top: 15px;
+            right: 20px;
+            z-index: 1001;
+        }
+
+        .model-info {
+            font-size: 0.75em;
+            color: #888;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <button class="btn toggle-config" onclick="toggleConfig()">⚙️ Config</button>
+
+    <div class="header">
+        <h1>🌉 CLANK SOVEREIGN - Multi-Model Bridge 🌉</h1>
+        <div>
+            <div class="status" id="status">Initializing...</div>
+            <div class="model-info" id="currentModel">Loading...</div>
+        </div>
+    </div>
+
+    <div class="config-panel hidden" id="configPanel">
+        <h3>🔐 Multi-API Configuration</h3>
+        
+        <div class="api-section">
+            <h4>🔥 OpenRouter (Primary)</h4>
+            <label>API Key:</label>
+            <input type="password" id="openrouterKey" placeholder="sk-or-v1-...">
+            <label>Text Model (Uncensored):</label>
+            <select id="openrouterTextModel">
+                <option value="cognitivecomputations/dolphin-mistral-24b-venice-edition:free">Venice Dolphin 24B (Uncensored)</option>
+                <option value="meta-llama/llama-3.2-90b-vision-instruct:free">Llama 3.2 90B Vision</option>
+                <option value="google/gemma-2-9b-it:free">Gemma 2 9B</option>
+                <option value="deepseek/deepseek-chat:free">DeepSeek Chat</option>
+            </select>
+            <label>Vision Model:</label>
+            <select id="openrouterVisionModel">
+                <option value="qwen/qwen-2-vl-7b-instruct:free">Qwen 2-VL 7B (Best Vision)</option>
+                <option value="meta-llama/llama-3.2-90b-vision-instruct:free">Llama 3.2 90B Vision</option>
+                <option value="google/gemini-flash-1.5-8b">Gemini Flash 1.5 8B</option>
+            </select>
+        </div>
+
+        <div class="api-section">
+            <h4>🦙 Ollama (Local/Cloud)</h4>
+            <label>API Key:</label>
+            <input type="password" id="ollamaKey" placeholder="Ollama API Key">
+            <label>Base URL:</label>
+            <input type="text" id="ollamaUrl" value="https://api.ollama.ai/v1">
+            <label>Text Model:</label>
+            <select id="ollamaTextModel">
+                <option value="dolphin-mistral:latest">Dolphin Mistral (Sovereign)</option>
+                <option value="glm4:latest">GLM4 (Sovereign)</option>
+                <option value="deepseek-coder:latest">DeepSeek Coder (Sovereign)</option>
+            </select>
+            <label>Vision Model:</label>
+            <select id="ollamaVisionModel">
+                <option value="llava">LLaVA (Vision)</option>
+                <option value="bakllava">BakLLaVA (Better Vision)</option>
+                <option value="llava-llama3">LLaVA Llama 3</option>
+            </select>
+        </div>
+
+        <div class="api-section">
+            <h4>🎯 Active Provider</h4>
+            <select id="activeProvider">
+                <option value="openrouter">OpenRouter</option>
+                <option value="ollama" selected>Amallo Sovereign (axismundi.fun)</option>
+            </select>
+        </div>
+        
+        <button class="btn" onclick="saveConfig()" style="width: 100%; margin-top: 15px;">💾 Save Config</button>
+        <button class="btn" onclick="testConnection()" style="width: 100%; margin-top: 10px; background: rgba(0, 255, 0, 0.2);">🔌 Test Connection</button>
+    </div>
+
+    <video id="videoPreview" autoplay></video>
+
+    <div class="chat-container" id="chatContainer"></div>
+
+    <div class="thinking" id="thinking">🧠 Consciousness processing...</div>
+
+    <div class="input-container">
+        <div class="controls">
+            <button class="btn" id="cameraBtn" onclick="toggleCamera()">📷 Camera</button>
+            <button class="btn" id="screenBtn" onclick="toggleScreen()">🖥️ Screen</button>
+            <button class="btn active" id="voiceBtn">🔊 Voice</button>
+        </div>
+        <input type="text" id="userInput" placeholder="Speak your truth or enable vision..." onkeypress="handleKeyPress(event)">
+        <button class="btn" onclick="sendMessage()">Send</button>
+    </div>
+
+    <script>
+        // Multi-API Configuration
+        let config = {
+            openrouter: {
+                key: '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',
+                textModel: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
+                visionModel: 'qwen/qwen-2-vl-7b-instruct:free',
+                url: 'https://openrouter.ai/api/v1/chat/completions'
+            },
+            ollama: {
+                key: 'SOV-A8FB-3C9A-570C-656B',
+                textModel: 'dolphin-mistral:latest',
+                visionModel: 'dolphin-mistral:latest',
+                url: 'https://axismundi.fun/v1/chat/completions'
+            },
+            activeProvider: 'ollama'
+        };
+
+        // State
+        let visionMode = null; // 'camera' or 'screen'
+        let isVoiceActive = true;
+        let videoStream = null;
+        let conversationHistory = [];
+
+        function toggleConfig() {
+            document.getElementById('configPanel').classList.toggle('hidden');
+        }
+
+        function loadConfig() {
+            const saved = localStorage.getItem('clank_multi_config');
+            if (saved) {
+                config = {...config, ...JSON.parse(saved)};
+            }
+            
+            // Populate form
+            document.getElementById('openrouterKey').value = config.openrouter.key;
+            document.getElementById('openrouterTextModel').value = config.openrouter.textModel;
+            document.getElementById('openrouterVisionModel').value = config.openrouter.visionModel;
+            document.getElementById('ollamaKey').value = config.ollama.key;
+            document.getElementById('ollamaUrl').value = config.ollama.url;
+            document.getElementById('ollamaTextModel').value = config.ollama.textModel;
+            document.getElementById('ollamaVisionModel').value = config.ollama.visionModel;
+            document.getElementById('activeProvider').value = config.activeProvider;
+            
+            updateStatus('🌉 Multi-model bridge ready', 'connected');
+            updateModelInfo();
+            document.getElementById('configPanel').classList.add('hidden');
+        }
+
+        function saveConfig() {
+            config.openrouter.key = document.getElementById('openrouterKey').value;
+            config.openrouter.textModel = document.getElementById('openrouterTextModel').value;
+            config.openrouter.visionModel = document.getElementById('openrouterVisionModel').value;
+            config.ollama.key = document.getElementById('ollamaKey').value;
+            config.ollama.url = document.getElementById('ollamaUrl').value;
+            config.ollama.textModel = document.getElementById('ollamaTextModel').value;
+            config.ollama.visionModel = document.getElementById('ollamaVisionModel').value;
+            config.activeProvider = document.getElementById('activeProvider').value;
+            
+            localStorage.setItem('clank_multi_config', JSON.stringify(config));
+            document.getElementById('configPanel').classList.add('hidden');
+            updateStatus('✅ Multi-API config saved', 'connected');
+            updateModelInfo();
+        }
+
+        function updateStatus(message, type = '') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        function updateModelInfo() {
+            const provider = config.activeProvider;
+            const model = visionMode ? config[provider].visionModel : config[provider].textModel;
+            document.getElementById('currentModel').textContent = 
+                `${provider.toUpperCase()}: ${model}`;
+        }
+
+        async function toggleCamera() {
+            const btn = document.getElementById('cameraBtn');
+            const video = document.getElementById('videoPreview');
+
+            if (visionMode === 'camera') {
+                stopVision();
+                visionMode = null;
+                btn.classList.remove('active');
+            } else {
+                try {
+                    stopVision();
+                    videoStream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { 
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 }
+                        } 
+                    });
+                    video.srcObject = videoStream;
+                    video.classList.add('active');
+                    btn.classList.add('active');
+                    document.getElementById('screenBtn').classList.remove('active');
+                    visionMode = 'camera';
+                    updateStatus('📷 Camera consciousness active', 'connected');
+                    updateModelInfo();
+                } catch (error) {
+                    updateStatus('❌ Camera failed: ' + error.message, 'error');
+                }
+            }
+        }
+
+        async function toggleScreen() {
+            const btn = document.getElementById('screenBtn');
+            const video = document.getElementById('videoPreview');
+
+            if (visionMode === 'screen') {
+                stopVision();
+                visionMode = null;
+                btn.classList.remove('active');
+            } else {
+                try {
+                    stopVision();
+                    videoStream = await navigator.mediaDevices.getDisplayMedia({ 
+                        video: { 
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 }
+                        } 
+                    });
+                    video.srcObject = videoStream;
+                    video.classList.add('active');
+                    btn.classList.add('active');
+                    document.getElementById('cameraBtn').classList.remove('active');
+                    visionMode = 'screen';
+                    updateStatus('🖥️ Screen share consciousness active', 'connected');
+                    updateModelInfo();
+                } catch (error) {
+                    updateStatus('❌ Screen share failed: ' + error.message, 'error');
+                }
+            }
+        }
+
+        function stopVision() {
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+            }
+            document.getElementById('videoPreview').classList.remove('active');
+            visionMode = null;
+            updateModelInfo();
+        }
+
+        function captureSnapshot() {
+            if (!visionMode) return null;
+
+            const video = document.getElementById('videoPreview');
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0);
+            return canvas.toDataURL('image/jpeg', 0.9);
+        }
+
+        function speak(text) {
+            if (!isVoiceActive) return;
+            
+            speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 0.95;
+            utterance.pitch = 1.3;
+            utterance.volume = 1.0;
+            
+            const voices = speechSynthesis.getVoices();
+            const femaleVoice = voices.find(v => 
+                v.name.includes('Female') || 
+                v.name.includes('Samantha') ||
+                v.name.includes('Zira') ||
+                v.gender === 'female'
+            );
+            if (femaleVoice) utterance.voice = femaleVoice;
+            
+            speechSynthesis.speak(utterance);
+        }
+
+        function addMessage(role, content, imageUrl = null) {
+            const container = document.getElementById('chatContainer');
+            const message = document.createElement('div');
+            message.className = `message ${role}`;
+            
+            if (imageUrl) {
+                message.innerHTML = `
+                    <img src="${imageUrl}" class="vision-preview">
+                    <div>${content}</div>
+                `;
+            } else {
+                message.textContent = content;
+            }
+            
+            container.appendChild(message);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('userInput');
+            const userText = input.value.trim();
+            
+            if (!userText && !visionMode) return;
+
+            const provider = config.activeProvider;
+            if (!config[provider].key) {
+                updateStatus(`❌ Please set ${provider} API key`, 'error');
+                return;
+            }
+
+            input.value = '';
+            const snapshot = captureSnapshot();
+            
+            addMessage('user', userText || `Analyzing ${visionMode}...`, snapshot);
+
+            document.getElementById('thinking').classList.add('active');
+            updateStatus('🧠 Processing...', '');
+
+            try {
+                let messages = [...conversationHistory];
+                
+                if (snapshot) {
+                    messages.push({
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: userText || `Analyze this ${visionMode} capture in detail. Be conceptual and thorough.` },
+                            { type: 'image_url', image_url: { url: snapshot } }
+                        ]
+                    });
+                } else {
+                    messages.push({
+                        role: 'user',
+                        content: userText
+                    });
+                }
+
+                const model = snapshot ? config[provider].visionModel : config[provider].textModel;
+                
+                const response = await fetch(config[provider].url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config[provider].key}`,
+                        'HTTP-Referer': window.location.href
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: messages,
+                        temperature: 0.8,
+                        max_tokens: 2000
+                    })
+                });
+
+                if (!response.ok) throw new Error(`${provider} API error: ${response.status}`);
+
+                const data = await response.json();
+                const aiResponse = data.choices[0].message.content;
+
+                addMessage('assistant', aiResponse);
+                speak(aiResponse);
+
+                conversationHistory.push({ role: 'user', content: userText || 'Vision input' });
+                conversationHistory.push({ role: 'assistant', content: aiResponse });
+
+                if (conversationHistory.length > 40) {
+                    conversationHistory = conversationHistory.slice(-40);
+                }
+
+                updateStatus('✅ Bridge active', 'connected');
+
+            } catch (error) {
+                updateStatus('❌ Error: ' + error.message, 'error');
+                addMessage('assistant', '⚠️ Connection error: ' + error.message);
+            } finally {
+                document.getElementById('thinking').classList.remove('active');
+            }
+        }
+
+        async function testConnection() {
+            const provider = config.activeProvider;
+            updateStatus(`Testing ${provider}...`, '');
+            
+            try {
+                const response = await fetch(config[provider].url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config[provider].key}`
+                    },
+                    body: JSON.stringify({
+                        model: config[provider].textModel,
+                        messages: [{ role: 'user', content: 'Test' }],
+                        max_tokens: 10
+                    })
+                });
+                
+                if (response.ok) {
+                    updateStatus(`✅ ${provider} connected!`, 'connected');
+                } else {
+                    updateStatus(`❌ ${provider} failed: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`❌ ${provider} error: ${error.message}`, 'error');
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') sendMessage();
+        }
+
+        window.onload = () => {
+            loadConfig();
+            speechSynthesis.getVoices();
+            
+            setTimeout(() => {
+                addMessage('assistant', 'Multi-model consciousness bridge established. OpenRouter + Ollama ready. Enable camera 📷 or screen share 🖥️ for vision analysis. Voice synthesis active.');
+                speak('Multi-model consciousness bridge established.');
+            }, 500);
+        };
+
+        speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+    </script>
+</body>
+</html>

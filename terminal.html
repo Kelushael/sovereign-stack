@@ -143,95 +143,73 @@ html,body{
 #output::-webkit-scrollbar-track{background:transparent}
 #output::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.2);border-radius:2px}
 
-/* ── CHAT BUBBLES ── */
-.line{
-  display:inline-block;
-  max-width:88%;
-  margin-bottom:6px;
-  padding:5px 12px;
-  border-radius:14px;
-  border:1px solid transparent;
-  line-height:1.6;font-size:13px;
-  animation:line-in 0.15s ease forwards;
-  opacity:0;transform:translateY(4px);
+/* ── HIGHLIGHT LINES — tight bg hugging text only, like ::selection ── */
+.line-row{
+  display:block;
+  padding:2px 0;
+  overflow:hidden;
   clear:both;
 }
-@keyframes line-in{
-  to{opacity:1;transform:translateY(0)}
+.line{
+  display:inline;
+  padding:1px 5px;
+  border-radius:3px;
+  line-height:2.1;
+  font-size:13px;
+  animation:line-in 0.2s ease forwards;
+  opacity:0;
+  box-decoration-break:clone;
+  -webkit-box-decoration-break:clone;
 }
+@keyframes line-in{to{opacity:1}}
 
-/* user bubble — right, dark on light */
+/* user — lime bg, black text (like selecting bright green text) */
 .line.user{
-  float:right;clear:both;
-  background:rgba(255,220,180,0.92);
-  border-color:rgba(255,140,40,0.6);
-  color:#1a0500;
+  background:var(--lime);
+  color:#0a1200;
   font-weight:bold;
 }
-
-/* ai bubble — left, light on dark */
+/* ai — deep purple bg, white text */
 .line.ai{
-  float:left;clear:both;
-  background:rgba(10,4,20,0.88);
-  border-color:rgba(192,132,252,0.5);
-  color:rgba(255,255,255,0.92);
-  border-left:3px solid var(--purple);
-  max-width:92%;
+  background:rgba(80,20,140,0.85);
+  color:#f0e8ff;
 }
-
-/* system — subtle dark pill */
+/* system — blue bg, dark text */
 .line.system{
-  float:left;clear:both;
-  background:rgba(0,0,0,0.45);
-  border-color:rgba(137,207,240,0.2);
-  color:rgba(137,207,240,0.7);
+  background:rgba(30,60,90,0.75);
+  color:#b8e0ff;
   font-size:11px;
 }
-
-/* success — green on dark */
+/* success — bright lime bg, black */
 .line.success{
-  float:left;clear:both;
-  background:rgba(0,40,10,0.8);
-  border-color:rgba(190,255,0,0.4);
-  color:var(--lime);
-  text-shadow:0 0 8px rgba(190,255,0,0.3);
+  background:rgba(130,220,60,0.75);
+  color:#001a00;
 }
-
-/* error — red on dark */
+/* error — red bg, white */
 .line.error{
-  float:left;clear:both;
-  background:rgba(40,0,0,0.85);
-  border-color:rgba(255,68,68,0.5);
-  color:#FF6666;
+  background:rgba(180,30,30,0.8);
+  color:#ffe8e8;
 }
-
-/* warning — orange on dark */
+/* warning — orange bg, black */
 .line.warning{
-  float:left;clear:both;
-  background:rgba(30,10,0,0.85);
-  border-color:rgba(255,107,0,0.45);
-  color:var(--orange);
+  background:rgba(220,100,0,0.75);
+  color:#1a0500;
 }
-
-/* info — dim white on transparent */
+/* info — dark translucent, dim text */
 .line.info{
-  float:left;clear:both;
-  background:rgba(0,0,0,0.3);
-  border-color:rgba(255,255,255,0.1);
-  color:rgba(255,255,255,0.55);
+  background:rgba(0,0,0,0.35);
+  color:rgba(255,255,255,0.5);
   font-size:11px;
 }
 
-/* clearfix after each bubble */
-.line::after{content:'';display:table;clear:both}
-
-/* typing cursor in ai responses */
+/* typing cursor */
 .typing-cursor{
-  display:inline-block;width:8px;height:14px;
-  background:var(--purple);
+  display:inline-block;width:7px;height:13px;
+  background:#c084fc;
   animation:blink 0.7s step-end infinite;
-  vertical-align:middle;
+  vertical-align:middle;margin-left:2px;
 }
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 
 /* ── ASCII ART ── */
@@ -728,10 +706,9 @@ const out = document.getElementById('output');
 function addLine(text, type='info', delay=0){
   return new Promise(res=>{
     setTimeout(()=>{
-      // wrap in clearfix row so floated bubbles stack vertically
       const row = document.createElement('div');
-      row.style.cssText = 'clear:both;overflow:hidden;margin-bottom:2px';
-      const d = document.createElement('div');
+      row.className = 'line-row';
+      const d = document.createElement('span');
       d.className = 'line '+type;
       d.textContent = text;
       row.appendChild(d);
@@ -744,19 +721,16 @@ function addLine(text, type='info', delay=0){
 
 async function typeWriter(text, type='ai'){
   const row = document.createElement('div');
-  row.style.cssText = 'clear:both;overflow:hidden;margin-bottom:2px';
-  const d = document.createElement('div');
+  row.className = 'line-row';
+  const d = document.createElement('span');
   d.className = 'line '+type;
-  d.style.display = 'flex';
-  d.style.alignItems = 'flex-start';
-  d.style.gap = '8px';
 
   const textSpan = document.createElement('span');
-  textSpan.style.flex = '1';
   const cursor = document.createElement('span');
   cursor.className = 'typing-cursor';
 
   d.appendChild(textSpan);
+  d.appendChild(cursor);
   row.appendChild(d);
   out.appendChild(row);
   out.scrollTop = out.scrollHeight;

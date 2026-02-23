@@ -8,18 +8,22 @@
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
   --orange:#FF6B00;--blue:#89CFF0;--purple:#C084FC;
-  --lime:#BEFF00;--dark:#08030A;--dim:#1A0A00;
+  --lime:#BEFF00;--dark:#1a0800;--dim:#2a1200;
+  --bg:#c85000;
 }
 
 html,body{
   height:100%;overflow:hidden;
-  background:var(--dark);
+  background:var(--bg);
   font-family:'Courier New',monospace;
 }
 
 /* ── CANVAS LAYERS ── */
+#cosmic-canvas{
+  position:fixed;inset:0;z-index:-1;pointer-events:none;
+}
 #matrix-canvas{
-  position:fixed;inset:0;z-index:0;opacity:0.07;pointer-events:none;
+  position:fixed;inset:0;z-index:0;opacity:0.05;pointer-events:none;
 }
 #particle-canvas{
   position:fixed;inset:0;z-index:1;pointer-events:none;
@@ -49,24 +53,25 @@ html,body{
   position:relative;z-index:10;
   display:flex;flex-direction:column;
   height:100vh;
-  border:1px solid rgba(137,207,240,0.15);
+  border:1px solid rgba(255,160,60,0.3);
+  background:rgba(180,60,0,0.18);
+  backdrop-filter:blur(2px);
   box-shadow:
-    0 0 80px rgba(255,107,0,0.08),
-    0 0 40px rgba(192,132,252,0.05),
-    inset 0 0 80px rgba(0,0,0,0.5);
+    0 0 80px rgba(255,107,0,0.15),
+    inset 0 0 120px rgba(0,0,0,0.3);
   animation:frame-breathe 4s ease-in-out infinite;
 }
 @keyframes frame-breathe{
-  0%,100%{box-shadow:0 0 60px rgba(255,107,0,0.06),0 0 30px rgba(192,132,252,0.04),inset 0 0 80px rgba(0,0,0,0.5)}
-  50%{box-shadow:0 0 100px rgba(255,107,0,0.12),0 0 60px rgba(192,132,252,0.08),inset 0 0 80px rgba(0,0,0,0.5)}
+  0%,100%{box-shadow:0 0 60px rgba(255,107,0,0.1),inset 0 0 80px rgba(0,0,0,0.25)}
+  50%{box-shadow:0 0 120px rgba(255,107,0,0.22),inset 0 0 80px rgba(0,0,0,0.25)}
 }
 
 /* ── HEADER ── */
 #header{
   display:flex;align-items:center;justify-content:space-between;
   padding:10px 20px;
-  border-bottom:1px solid rgba(137,207,240,0.1);
-  background:rgba(8,3,10,0.9);
+  border-bottom:1px solid rgba(255,140,40,0.2);
+  background:rgba(10,3,0,0.82);
   backdrop-filter:blur(20px);
   position:relative;overflow:hidden;
 }
@@ -130,34 +135,95 @@ html,body{
 /* ── OUTPUT ── */
 #output{
   flex:1;overflow-y:auto;
-  padding:20px;
+  padding:16px 20px;
   scroll-behavior:smooth;
+  background:transparent;
 }
 #output::-webkit-scrollbar{width:4px}
 #output::-webkit-scrollbar-track{background:transparent}
-#output::-webkit-scrollbar-thumb{background:rgba(137,207,240,0.2);border-radius:2px}
+#output::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.2);border-radius:2px}
 
+/* ── CHAT BUBBLES ── */
 .line{
-  margin-bottom:4px;line-height:1.6;font-size:13px;
+  display:inline-block;
+  max-width:88%;
+  margin-bottom:6px;
+  padding:5px 12px;
+  border-radius:14px;
+  border:1px solid transparent;
+  line-height:1.6;font-size:13px;
   animation:line-in 0.15s ease forwards;
-  opacity:0;transform:translateX(-4px);
+  opacity:0;transform:translateY(4px);
+  clear:both;
 }
 @keyframes line-in{
-  to{opacity:1;transform:translateX(0)}
+  to{opacity:1;transform:translateY(0)}
 }
 
-.line.system{color:rgba(137,207,240,0.6)}
-.line.user{color:var(--blue);font-weight:bold}
-.line.success{color:var(--lime);text-shadow:0 0 8px rgba(190,255,0,0.3)}
-.line.error{color:#FF4444}
-.line.warning{color:var(--orange)}
-.line.info{color:rgba(255,255,255,0.45)}
-.line.ai{
-  color:rgba(255,255,255,0.85);
-  border-left:2px solid var(--purple);
-  padding-left:12px;
-  margin-left:4px;
+/* user bubble — right, dark on light */
+.line.user{
+  float:right;clear:both;
+  background:rgba(255,220,180,0.92);
+  border-color:rgba(255,140,40,0.6);
+  color:#1a0500;
+  font-weight:bold;
 }
+
+/* ai bubble — left, light on dark */
+.line.ai{
+  float:left;clear:both;
+  background:rgba(10,4,20,0.88);
+  border-color:rgba(192,132,252,0.5);
+  color:rgba(255,255,255,0.92);
+  border-left:3px solid var(--purple);
+  max-width:92%;
+}
+
+/* system — subtle dark pill */
+.line.system{
+  float:left;clear:both;
+  background:rgba(0,0,0,0.45);
+  border-color:rgba(137,207,240,0.2);
+  color:rgba(137,207,240,0.7);
+  font-size:11px;
+}
+
+/* success — green on dark */
+.line.success{
+  float:left;clear:both;
+  background:rgba(0,40,10,0.8);
+  border-color:rgba(190,255,0,0.4);
+  color:var(--lime);
+  text-shadow:0 0 8px rgba(190,255,0,0.3);
+}
+
+/* error — red on dark */
+.line.error{
+  float:left;clear:both;
+  background:rgba(40,0,0,0.85);
+  border-color:rgba(255,68,68,0.5);
+  color:#FF6666;
+}
+
+/* warning — orange on dark */
+.line.warning{
+  float:left;clear:both;
+  background:rgba(30,10,0,0.85);
+  border-color:rgba(255,107,0,0.45);
+  color:var(--orange);
+}
+
+/* info — dim white on transparent */
+.line.info{
+  float:left;clear:both;
+  background:rgba(0,0,0,0.3);
+  border-color:rgba(255,255,255,0.1);
+  color:rgba(255,255,255,0.55);
+  font-size:11px;
+}
+
+/* clearfix after each bubble */
+.line::after{content:'';display:table;clear:both}
 
 /* typing cursor in ai responses */
 .typing-cursor{
@@ -662,10 +728,14 @@ const out = document.getElementById('output');
 function addLine(text, type='info', delay=0){
   return new Promise(res=>{
     setTimeout(()=>{
+      // wrap in clearfix row so floated bubbles stack vertically
+      const row = document.createElement('div');
+      row.style.cssText = 'clear:both;overflow:hidden;margin-bottom:2px';
       const d = document.createElement('div');
       d.className = 'line '+type;
       d.textContent = text;
-      out.appendChild(d);
+      row.appendChild(d);
+      out.appendChild(row);
       out.scrollTop = out.scrollHeight;
       res();
     }, delay);
@@ -673,6 +743,8 @@ function addLine(text, type='info', delay=0){
 }
 
 async function typeWriter(text, type='ai'){
+  const row = document.createElement('div');
+  row.style.cssText = 'clear:both;overflow:hidden;margin-bottom:2px';
   const d = document.createElement('div');
   d.className = 'line '+type;
   d.style.display = 'flex';
@@ -685,7 +757,8 @@ async function typeWriter(text, type='ai'){
   cursor.className = 'typing-cursor';
 
   d.appendChild(textSpan);
-  out.appendChild(d);
+  row.appendChild(d);
+  out.appendChild(row);
   out.scrollTop = out.scrollHeight;
 
   for(const ch of text){

@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+# SETUP:
+# pip install aiohttp twilio
+# export TWILIO_ACCOUNT_SID=ACxxxxxxx
+# export TWILIO_AUTH_TOKEN=xxxxxxx
+# export TWILIO_PHONE_NUMBER=+1xxxxxxxxxx
+# python3 amallo-sms
+#
+# Then in Twilio console:
+# Set SMS webhook URL to: https://axismundi.fun/sms/inbound
+# Method: POST
+#
+# For local dev:
+# cloudflared tunnel --url http://localhost:8400
+# (use the tunnel URL as webhook)
+
+import os
+import time
+import asyncio
+import subprocess
+import re
+from collections import defaultdict, deque
+from aiohttp import web
+import aiohttp
+
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
+AMALLO_URL = os.environ.get("AMALLO_URL", "http://localhost:8100")
+
+PORT = 8400
+start_time = time.time()
+total_messages = 0
+
+# Per-sender state
+conversation_history: dict = defaultdict(lambda: deque(maxlen=10))
+last_reply_time: dict = {}
+active_numbers: set = set()
+
+HELP_TEXT = """AXIS SMS TERMINAL
+Commands:
+  /chat <msg> - chat with AI
+  /run <code> - execute bash
+  /models - list models
+  /status - system status
+  Just text = chat mode"""
+
+
+def make_twiml(message: str) -> str:
+    safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
+
+
+def truncate(text: str, limit: int = 1600) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit - 9] + "(cont...)"
+
+
+def validate_twilio_signature(request: web.Request, body: bytes) -> bool:
+    if not TWILIO_AUTH_TOKEN:
+        return True  # dev mode
+    try:
+        from twilio.request_validator import RequestValidator
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        url = str(request.url)
+        sig = request.headers.get("X-Twilio-Signature", "")
+        # Parse form params for validation
+        import urllib.parse
+        params = dict(urllib.parse.parse_qsl(body.decode("utf-8")))
+        return validator.validate(url, params, sig)
+    except Exception:
+        return False
+
+
+async def chat_with_amallo(from_number: str, message: str) -> str:
+    history = list(conversation_history[from_number])
+    payload = {"message": message, "history": history}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{AMALLO_URL}/chat",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
+                return data.get("response", data.get("message", str(data)))
+    except Exception as e:
+        return f"[amallo-brain error: {e}]"
+
+
+def extract_and_run_code(response: str) -> str:
+    """Extract code blocks and run them, appending output."""
+    pattern = r"```(?:\w+)?\n(.*?)```"
+    matches = re.findall(pattern, response, re.DOTALL)
+    if not matches:
+        return response
+    outputs = []
+    for code in matches:
+        code = code.strip()
+        try:
+            result = subprocess.run(
+                ["bash", "-c", code],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            out = result.stdout.strip()
+            err = result.stderr.strip()
+            combined = out + ("\n" + err if err else "")
+            outputs.append(f"$ {code[:60]}...\n{combined}" if len(code) > 60 else f"$ {code}\n{combined}")
+        except subprocess.TimeoutExpired:
+            outputs.append("[bash: timeout after 30s]")
+        except Exception as e:
+            outputs.append(f"[bash error: {e}]")
+    if outputs:
+        return response + "\n\n--- output ---\n" + "\n".join(outputs)
+    return response
+
+
+async def handle_slash_command(cmd: str, from_number: str) -> str:
+    parts = cmd.split(None, 1)
+    command = parts[0].lower()
+    args = parts[1] if len(parts) > 1 else ""
+
+    if command == "/chat":
+        if not args:
+            return "Usage: /chat <message>"
+        return await chat_with_amallo(from_number, args)
+
+    elif command == "/run":
+        if not args:
+            return "Usage: /run <bash code>"
+        try:
+            result = subprocess.run(
+                ["bash", "-c", args],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            out = result.stdout.strip()
+            err = result.stderr.strip()
+            return (out + ("\n" + err if err else "")) or "[no output]"
+        except subprocess.TimeoutExpired:
+            return "[timeout after 30s]"
+        except Exception as e:
+            return f"[error: {e}]"
+
+    elif command == "/models":
+        try:
+            result = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return result.stdout.strip() or "[no models found]"
+        except Exception as e:
+            return f"[models error: {e}]"
+
+    elif command == "/status":
+        uptime = int(time.time() - start_time)
+        return (
+            f"AXIS SMS STATUS\n"
+            f"Uptime: {uptime}s\n"
+            f"Messages: {total_messages}\n"
+            f"Active numbers: {len(active_numbers)}\n"
+            f"Amallo URL: {AMALLO_URL}"
+        )
+
+    else:
+        return f"Unknown command: {command}\nSend 'help' for commands."
+
+
+async def process_sms(from_number: str, body: str) -> str:
+    global total_messages
+    total_messages += 1
+    active_numbers.add(from_number)
+
+    stripped = body.strip()
+
+    # Help
+    if stripped.lower() in ("help", "?"):
+        return HELP_TEXT
+
+    # Slash command
+    if stripped.startswith("/"):
+        reply = await handle_slash_command(stripped, from_number)
+    else:
+        # Natural language → amallo-brain
+        reply = await chat_with_amallo(from_number, stripped)
+        reply = extract_and_run_code(reply)
+
+    # Update conversation history
+    conversation_history[from_number].append({"role": "user", "content": stripped})
+    conversation_history[from_number].append({"role": "assistant", "content": reply})
+
+    return truncate(reply)
+
+
+async def inbound_sms(request: web.Request) -> web.Response:
+    global last_reply_time
+
+    raw_body = await request.read()
+
+    if not validate_twilio_signature(request, raw_body):
+        return web.Response(status=403, text="Invalid signature")
+
+    data = await request.post()
+    from_number = data.get("From", "unknown")
+    body = data.get("Body", "")
+    # to_number = data.get("To", TWILIO_PHONE_NUMBER)
+
+    # Rate limit: 5s minimum between replies per number
+    now = time.time()
+    last = last_reply_time.get(from_number, 0)
+    if now - last < 5:
+        return web.Response(
+            content_type="text/xml",
+            text=make_twiml("Please wait a moment before sending another message."),
+        )
+    last_reply_time[from_number] = now
+
+    reply = await process_sms(from_number, body)
+
+    return web.Response(
+        content_type="text/xml",
+        text=make_twiml(reply),
+    )
+
+
+async def status_endpoint(request: web.Request) -> web.Response:
+    uptime = int(time.time() - start_time)
+    return web.json_response({
+        "uptime_seconds": uptime,
+        "total_messages": total_messages,
+        "active_numbers": list(active_numbers),
+        "amallo_url": AMALLO_URL,
+        "twilio_phone": TWILIO_PHONE_NUMBER,
+        "dev_mode": not bool(TWILIO_AUTH_TOKEN),
+    })
+
+
+async def send_sms(to: str, body: str) -> dict:
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        print(f"[send_sms DEV] To={to} Body={body}")
+        return {"status": "dev_mode"}
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+    auth = aiohttp.BasicAuth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    payload = {"From": TWILIO_PHONE_NUMBER, "To": to, "Body": body}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=payload, auth=auth) as resp:
+            return await resp.json()
+
+
+def main():
+    app = web.Application()
+    app.router.add_post("/sms/inbound", inbound_sms)
+    app.router.add_get("/sms/status", status_endpoint)
+
+    print(f"[amallo-sms] Starting on port {PORT}")
+    print(f"[amallo-sms] Amallo URL: {AMALLO_URL}")
+    print(f"[amallo-sms] Dev mode: {not bool(TWILIO_AUTH_TOKEN)}")
+    web.run_app(app, host="127.0.0.1", port=PORT, print=None)
+
+
+if __name__ == "__main__":
+    main()

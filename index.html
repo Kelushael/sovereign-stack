@@ -165,6 +165,48 @@ footer{color:#333;font-size:.73rem;text-align:center;padding-top:2rem;border-top
       <div class="cc">python3 amallo-discord</div>
       <div class="cd">Discord bot backed by the sovereign node. Slash commands: /chat /demo /about /stack /models. @mention or DM for free-form AI chat. <b>/demo</b> generates a 33-minute expiring link to a live hosted terminal preview — iframe embed with countdown, link dies at session end.</div>
     </div>
+    <div class="card">
+      <div class="cn">📁 mesh-drive <span class="badge bnew">NEW</span></div>
+      <div class="cc">bash setup-syncthing.sh</div>
+      <div class="cd">Syncthing shared folder for mesh members. Peer-to-peer, no cloud, encrypted in transit. All members sync ~/mesh-drive automatically.<br><br>
+        <ul style="margin-left:1rem;color:var(--dt);font-size:.8rem;line-height:1.7">
+          <li>Peer-to-peer encrypted sync</li>
+          <li>~/mesh-drive shared across all nodes</li>
+          <li>GUI at /drive/ (nginx basic auth)</li>
+          <li>No cloud, no Dropbox, fully sovereign</li>
+        </ul>
+      </div>
+    </div>
+<div class="card">
+  <div class="card-title">📱 amallo-sms</div>
+  <div class="card-desc">Text your sovereign node. Twilio-powered SMS gateway — send commands, run code, chat with AI. All via text message. No app. No internet required on your end. Just texting.</div>
+  <div class="install-box">
+    <code>pip install aiohttp twilio && amallo-sms</code>
+    <button onclick="copy(this)" data-copy="pip install aiohttp twilio && amallo-sms">copy</button>
+  </div>
+  <ul>
+    <li>Text <code>/run ls -la</code> → server runs it, texts back output</li>
+    <li>Text anything → AI chat reply via SMS</li>
+    <li>Code blocks auto-extracted + executed</li>
+    <li>Per-sender conversation memory</li>
+    <li>Twilio webhook at /sms/inbound</li>
+  </ul>
+</div>
+<div class="card">
+  <div class="card-title">🌐 amallo-mesh</div>
+  <div class="card-desc">Real-time WebSocket IM mesh for sovereign stack members. Rooms: #general #dev #terminal. The terminal room runs commands live and broadcasts output to all members.</div>
+  <div class="install-box">
+    <code>amallo-mesh</code>
+    <button onclick="copy(this)" data-copy="amallo-mesh">copy</button>
+  </div>
+  <ul>
+    <li>#terminal room: type = axis runs it, everyone sees output</li>
+    <li>iMessage-style bubbles, orange background</li>
+    <li>Handle colors auto-assigned per member</li>
+    <li>Shared secret auth, no accounts</li>
+    <li>WebSocket at /ws, UI at /mesh.html</li>
+  </ul>
+</div>
   </div>
 </section>
 

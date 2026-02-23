@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""amallo-mesh — sovereign WebSocket instant messenger mesh (port 8500)"""
+import asyncio, json, os, re, time, pathlib, sys
+from aiohttp import web, ClientSession, ClientTimeout
+
+MESH_PORT  = int(os.environ.get("MESH_PORT",  8500))
+AMALLO_URL = os.environ.get("AMALLO_URL", "http://localhost:8100")
+MESH_SECRET= os.environ.get("MESH_SECRET", "amallo")
+
+ROOMS = {"general": [], "dev": [], "terminal": []}
+HISTORY= {r: [] for r in ROOMS}
+HANDLES= {}   # ws → handle
+WS_ROOM= {}   # ws → room
+
+HANDLE_COLORS = ['#34C759','#FF9F0A','#BF5AF2','#FF375F','#5AC8FA']
+
+def _ts(): return int(time.time() * 1000)
+
+def _record(room, msg):
+    HISTORY[room].append(msg)
+    if len(HISTORY[room]) > 50:
+        HISTORY[room] = HISTORY[room][-50:]
+
+async def _broadcast(room, payload):
+    dead = []
+    for ws in list(ROOMS.get(room, [])):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        await _disconnect(ws)
+
+async def _disconnect(ws):
+    handle = HANDLES.pop(ws, None)
+    room   = WS_ROOM.pop(ws, None)
+    if room and ws in ROOMS.get(room, []):
+        ROOMS[room].remove(ws)
+        if handle:
+            msg = {"type":"system","text":f"{handle} left #{room}","ts":_ts()}
+            _record(room, msg)
+            await _broadcast(room, msg)
+
+async def _axis_reply(text, room):
+    """Forward to amallo-brain, extract code blocks, run them, broadcast."""
+    ai_text = None
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=30)) as sess:
+            async with sess.post(f"{AMALLO_URL}/chat",
+                                 json={"message": text},
+                                 headers={"Content-Type":"application/json"}) as r:
+                data = await r.json()
+                ai_text = data.get("response") or data.get("text") or str(data)
+    except Exception as e:
+        ai_text = f"[amallo-brain unreachable: {e}]"
+
+    reply_msg = {"type":"msg","room":room,"handle":"[AXIS]",
+                 "text": ai_text, "ts":_ts(), "axis":True}
+    _record(room, reply_msg)
+    await _broadcast(room, reply_msg)
+
+    # Extract and run code fences
+    fences = re.findall(r'```(?:\w+\n)?(.*?)```', ai_text, re.DOTALL)
+    for code in fences:
+        code = code.strip()
+        if not code:
+            continue
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'bash', '-c', code,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            out = (stdout.decode() + stderr.decode()).strip()
+        except asyncio.TimeoutError:
+            out = "[execution timed out]"
+        except Exception as e:
+            out = f"[exec error: {e}]"
+        if out:
+            out_msg = {"type":"msg","room":room,"handle":"[AXIS]",
+                       "text":f"```\n{out}\n```","ts":_ts(),"axis":True}
+            _record(room, out_msg)
+            await _broadcast(room, out_msg)
+
+async def ws_handler(request):
+    ws = web.WebSocketResponse(heartbeat=30)
+    await ws.prepare(request)
+    HANDLES[ws] = None
+    WS_ROOM[ws]  = None
+
+    try:
+        async for msg in ws:
+            if msg.type != web.WSMsgType.TEXT:
+                continue
+            try:
+                data = json.loads(msg.data)
+            except Exception:
+                await ws.send_json({"type":"error","text":"Bad JSON"})
+                continue
+
+            mtype = data.get("type")
+
+            if mtype == "join":
+                secret = data.get("secret","")
+                if secret != MESH_SECRET:
+                    await ws.send_json({"type":"error","text":"Invalid secret"})
+                    await ws.close()
+                    break
+                handle = str(data.get("handle","anon"))[:24].strip()
+                if not handle:
+                    handle = "anon"
+                # uniqueness
+                if handle in HANDLES.values():
+                    await ws.send_json({"type":"error","text":f"Handle '{handle}' already taken"})
+                    await ws.close()
+                    break
+                room = data.get("room","general")
+                if room not in ROOMS:
+                    room = "general"
+                HANDLES[ws] = handle
+                WS_ROOM[ws]  = room
+                ROOMS[room].append(ws)
+                # send history
+                for h in HISTORY[room]:
+                    await ws.send_json(h)
+                sys_msg = {"type":"system","text":f"{handle} joined #{room}","ts":_ts()}
+                _record(room, sys_msg)
+                await _broadcast(room, sys_msg)
+
+            elif mtype == "msg":
+                handle = HANDLES.get(ws)
+                if not handle:
+                    await ws.send_json({"type":"error","text":"Not joined"})
+                    continue
+                room = WS_ROOM.get(ws)
+                text = str(data.get("text",""))[:2000]
+                if not text:
+                    continue
+                out = {"type":"msg","room":room,"handle":handle,
+                       "text":text,"ts":_ts()}
+                _record(room, out)
+                await _broadcast(room, out)
+                if room == "terminal":
+                    asyncio.create_task(_axis_reply(text, room))
+
+            elif mtype == "switch":
+                handle = HANDLES.get(ws)
+                if not handle:
+                    continue
+                new_room = data.get("room","general")
+                if new_room not in ROOMS:
+                    await ws.send_json({"type":"error","text":f"Unknown room: {new_room}"})
+                    continue
+                old_room = WS_ROOM.get(ws)
+                if old_room == new_room:
+                    continue
+                if old_room and ws in ROOMS.get(old_room,[]):
+                    ROOMS[old_room].remove(ws)
+                    leave_msg = {"type":"system","text":f"{handle} left #{old_room}","ts":_ts()}
+                    _record(old_room, leave_msg)
+                    await _broadcast(old_room, leave_msg)
+                WS_ROOM[ws] = new_room
+                ROOMS[new_room].append(ws)
+                # send history
+                for h in HISTORY[new_room]:
+                    await ws.send_json(h)
+                join_msg = {"type":"system","text":f"{handle} joined #{new_room}","ts":_ts()}
+                _record(new_room, join_msg)
+                await _broadcast(new_room, join_msg)
+    finally:
+        await _disconnect(ws)
+
+    return ws
+
+async def api_rooms(request):
+    data = {r: len(members) for r, members in ROOMS.items()}
+    return web.json_response(data)
+
+async def api_history(request):
+    room = request.match_info.get("room","general")
+    if room not in HISTORY:
+        return web.json_response([], status=404)
+    return web.json_response(HISTORY[room])
+
+async def serve_html(request):
+    script_dir = pathlib.Path(__file__).parent
+    html_file  = script_dir / "mesh.html"
+    if html_file.exists():
+        return web.FileResponse(html_file)
+    return web.Response(text="<h1>mesh.html not found</h1>", content_type="text/html")
+
+async def redirect_root(request):
+    raise web.HTTPFound("/mesh.html")
+
+def main():
+    app = web.Application()
+    app.router.add_get("/",               redirect_root)
+    app.router.add_get("/mesh.html",      serve_html)
+    app.router.add_get("/api/rooms",      api_rooms)
+    app.router.add_get("/api/history/{room}", api_history)
+    app.router.add_get("/ws",             ws_handler)
+    print(f"[amallo-mesh] listening on :{MESH_PORT}  secret={MESH_SECRET!r}")
+    web.run_app(app, host="0.0.0.0", port=MESH_PORT, print=None)
+
+if __name__ == "__main__":
+    main()

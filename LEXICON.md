@@ -56,6 +56,19 @@ Built: Car Wash mixing script, trading bots, monolithic
 Python scripts, audio_processor.py, Hive Mind Server.
 STILL no terminal. STILL no CLI. Just Replit + browser.
 
+THE REPLIT WALL: Apps ran. Preview worked. But couldn't
+make them actually show up outside the preview pane.
+Built real things that lived and died in a sandbox.
+The edenaxismundi.txt voice transcript is EXACTLY this —
+Marcus on voice, trying to figure out URLs, how to make
+something an AI could actually reach, one-use links,
+"I've pretty much proven it but I just want to make sure."
+He was engineering deployment philosophy with his voice
+because he had no way to deploy with his hands.
+
+The Hive Mind Server (FastAPI + ngrok) was the attempted
+escape hatch — but even that required knowing ngrok existed.
+
 ERA 3: CLI AGENTS DISCOVERED → SOVEREIGN STACK
 ──────────────────────────────────────────────────────────
 Found out Claude Code / CLI agents exist.

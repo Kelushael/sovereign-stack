@@ -77,8 +77,10 @@ class KeyManager:
             json.dump(self.keys, f, indent=2)
 
     def _gen(self, identity, role='user'):
-        parts = [uuid.uuid4().hex[:4].upper() for _ in range(4)]
-        key = 'SOV-' + '-'.join(parts)
+        import secrets, string
+        alphabet = string.ascii_letters + string.digits
+        rand = ''.join(secrets.choice(alphabet) for _ in range(40))
+        key = 'sov' + rand
         self.keys[key] = {'identity': identity, 'role': role,
                           'created': time.strftime('%Y-%m-%dT%H:%M:%SZ'), 'requests': 0}
         self._save()
@@ -377,7 +379,7 @@ class AmalloHandler(BaseHTTPRequestHandler):
             ok, info = self.auth()
             if not ok:
                 self.send_json({'error':'unauthorized',
-                                'hint':'POST /amallo/keys/create with {"identity":"yourname"} to get a SOV key'},401); return
+                                'hint':'POST /amallo/keys/create with {"identity":"yourname"} to get a sovereign key'},401); return
             messages = body.get('messages',[])
             if not messages and body.get('message'): messages=[{'role':'user','content':body['message']}]
             if not messages and body.get('prompt'):  messages=[{'role':'user','content':body['prompt']}]

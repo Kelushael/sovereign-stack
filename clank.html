@@ -296,6 +296,7 @@
             <select id="activeProvider">
                 <option value="openrouter">OpenRouter</option>
                 <option value="ollama" selected>Amallo Sovereign (axismundi.fun)</option>
+                <option value="gemini">Gemini 2.0 Flash (rotating 3 keys)</option>
             </select>
         </div>
         
@@ -333,6 +334,18 @@
                 textModel: 'dolphin-mistral:latest',
                 visionModel: 'dolphin-mistral:latest',
                 url: 'https://axismundi.fun/v1/chat/completions'
+            },
+            gemini: {
+                keys: [
+                    'AIzaSyDfNZ7xJIybR9OPcgLOBzzfn3zQnidJVx0',
+                    'AIzaSyBDPbJJwPxG2Vtr0g7NlBwMpYR45qdePzE',
+                    'AIzaSyA9LCc9CuCDoXb-o-HIpsaaApnrUXtEfeg'
+                ],
+                _keyIdx: 0,
+                textModel: 'gemini-2.0-flash',
+                visionModel: 'gemini-2.0-flash',
+                get key() { return this.keys[this._keyIdx]; },
+                nextKey() { this._keyIdx = (this._keyIdx + 1) % this.keys.length; return this.key; }
             },
             activeProvider: 'ollama'
         };
@@ -580,7 +593,6 @@
         }
 
         async function sendMessage() {
-            if (!wsReady) { updateStatus('⚡ connecting...', ''); return; }
             const input = document.getElementById('userInput');
             const userText = input.value.trim();
             if (!userText && !visionMode) return;
@@ -590,14 +602,91 @@
             document.getElementById('thinking').classList.add('active');
             conversationHistory.push({ role: 'user', content: userText || 'vision input' });
 
+            // Gemini: uses its own REST+SSE pipeline
+            if (config.activeProvider === 'gemini') {
+                sendGemini(userText, snapshot);
+                return;
+            }
+
+            // Sovereign node: WebSocket
+            if (!wsReady) { updateStatus('⚡ connecting...', ''); return; }
             const payload = snapshot
                 ? { type: 'vision', image: snapshot, text: userText || `Analyze this ${visionMode} in detail.`, token: config.ollama.key }
                 : { type: 'text', text: userText, token: config.ollama.key };
-
             ws.send(JSON.stringify(payload));
         }
 
-        async function testConnection() {
+        async function sendGemini(userText, snapshot) {
+            const g = config.gemini;
+            const key = g.key;
+            const model = snapshot ? g.visionModel : g.textModel;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${key}&alt=sse`;
+
+            // build parts
+            const parts = [];
+            if (snapshot) {
+                // strip data:image/jpeg;base64, prefix
+                const b64 = snapshot.split(',')[1];
+                parts.push({ inline_data: { mime_type: 'image/jpeg', data: b64 } });
+            }
+            parts.push({ text: userText || (snapshot ? `Analyze this ${visionMode} in detail.` : '') });
+
+            const body = { contents: [{ role: 'user', parts }] };
+
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                if (!resp.ok) {
+                    // rotate key and report
+                    const errText = await resp.text();
+                    g.nextKey();
+                    updateStatus(`⚠️ Gemini key rotated (${resp.status}) — retry`, 'error');
+                    document.getElementById('thinking').classList.remove('active');
+                    return;
+                }
+
+                const bubble = createStreamBubble();
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let full = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const chunk = decoder.decode(value, { stream: true });
+                    // SSE lines: data: {...}
+                    for (const line of chunk.split('\n')) {
+                        if (!line.startsWith('data:')) continue;
+                        const raw = line.slice(5).trim();
+                        if (!raw || raw === '[DONE]') continue;
+                        try {
+                            const obj = JSON.parse(raw);
+                            const token = obj?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                            if (token) {
+                                appendToken(bubble, token);
+                                full += token;
+                            }
+                        } catch(_) {}
+                    }
+                }
+
+                document.getElementById('thinking').classList.remove('active');
+                updateStatus(`🔵 GEMINI [key ${g._keyIdx + 1}/${g.keys.length}]`, 'connected');
+                speak(full);
+                conversationHistory.push({ role: 'assistant', content: full });
+
+            } catch(e) {
+                g.nextKey();
+                updateStatus(`❌ Gemini error — key rotated: ${e.message}`, 'error');
+                document.getElementById('thinking').classList.remove('active');
+            }
+        }
+
+
             const provider = config.activeProvider;
             updateStatus(`Testing ${provider}...`, '');
             

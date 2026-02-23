@@ -467,9 +467,34 @@ async function handleCmd(raw){
           input.placeholder='run command on your machine  or  / for menu';
           await addLine(`✔ Connected — ${d.user}@${d.host}`,'success');
           await addLine('  Inference routes to your machine.','info');
-          await addLine('  exec [cmd] for shell · just talk to chat','info');
+          await addLine('  Just chat — or exec [cmd] for raw shell','info');
         }else{
-          await addLine('✗ '+(d.error||'Connection failed'),'error');
+          const err=d.error||'Connection failed';
+          await addLine('✗ '+err,'error');
+          // Detect SSH-not-running vs bad password
+          if(err.toLowerCase().includes('refused')||err.toLowerCase().includes('timed out')||err.toLowerCase().includes('no route')){
+            await addLine('','info');
+            await addLine('  SSH server is not running on that machine.','warning');
+            await addLine('  Enable it — pick your OS:','info');
+            await addLine('','info');
+            await addLine('  WINDOWS (PowerShell as Admin):','system');
+            await addLine('    Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0','info');
+            await addLine('    Start-Service sshd','info');
+            await addLine('    Set-Service -Name sshd -StartupType Automatic','info');
+            await addLine('','info');
+            await addLine('  MAC:','system');
+            await addLine('    System Settings → General → Sharing → Remote Login → ON','info');
+            await addLine('','info');
+            await addLine('  LINUX:','system');
+            await addLine('    sudo apt install openssh-server','info');
+            await addLine('    sudo systemctl enable --now ssh','info');
+            await addLine('','info');
+            await addLine('  Then retry: /connect '+user+'@'+host,'warning');
+            await addLine('','info');
+            await addLine('  (Still using shared demo node while you set up)','info');
+          }else if(err.toLowerCase().includes('auth')){
+            await addLine('  Wrong password or username — check and try again.','warning');
+          }
         }
       }catch(e){await addLine('✗ '+e.message,'error');}
     });

@@ -343,6 +343,68 @@
         let videoStream = null;
         let conversationHistory = [];
 
+        // WebSocket state
+        let ws = null;
+        let wsReady = false;
+        let currentBubble = null;
+
+        function connectWS() {
+            const token = config.ollama.key;
+            ws = new WebSocket('wss://axismundi.fun/v1/vision/ws');
+            ws.onopen = () => {
+                wsReady = true;
+                updateStatus('🔴 LIVE — sovereign connected', 'connected');
+            };
+            ws.onclose = () => {
+                wsReady = false;
+                updateStatus('⚡ reconnecting...', '');
+                setTimeout(connectWS, 2000);
+            };
+            ws.onerror = () => {
+                updateStatus('❌ WS error', 'error');
+            };
+            ws.onmessage = (evt) => {
+                const msg = JSON.parse(evt.data);
+                if (msg.type === 'token') {
+                    if (!currentBubble) currentBubble = createStreamBubble();
+                    appendToken(currentBubble, msg.content);
+                } else if (msg.type === 'done') {
+                    if (currentBubble) {
+                        const fullText = currentBubble.textContent;
+                        speak(fullText);
+                        conversationHistory.push({ role: 'assistant', content: fullText });
+                    }
+                    currentBubble = null;
+                    document.getElementById('thinking').classList.remove('active');
+                    updateStatus('🔴 LIVE', 'connected');
+                } else if (msg.type === 'error') {
+                    updateStatus('❌ ' + msg.message, 'error');
+                    document.getElementById('thinking').classList.remove('active');
+                } else if (msg.type === 'pong') {
+                    // keepalive ack
+                }
+            };
+        }
+
+        function createStreamBubble() {
+            const container = document.getElementById('chatContainer');
+            const message = document.createElement('div');
+            message.className = 'message assistant';
+            container.appendChild(message);
+            container.scrollTop = container.scrollHeight;
+            return message;
+        }
+
+        function appendToken(bubble, token) {
+            bubble.textContent += token;
+            const container = document.getElementById('chatContainer');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        setInterval(() => {
+            if (ws && wsReady) ws.send(JSON.stringify({ type: 'ping' }));
+        }, 30000);
+
         function toggleConfig() {
             document.getElementById('configPanel').classList.toggle('hidden');
         }
@@ -518,83 +580,21 @@
         }
 
         async function sendMessage() {
+            if (!wsReady) { updateStatus('⚡ connecting...', ''); return; }
             const input = document.getElementById('userInput');
             const userText = input.value.trim();
-            
             if (!userText && !visionMode) return;
-
-            const provider = config.activeProvider;
-            if (!config[provider].key) {
-                updateStatus(`❌ Please set ${provider} API key`, 'error');
-                return;
-            }
-
             input.value = '';
             const snapshot = captureSnapshot();
-            
-            addMessage('user', userText || `Analyzing ${visionMode}...`, snapshot);
-
+            addMessage('user', userText || `👁 analyzing ${visionMode}...`, snapshot);
             document.getElementById('thinking').classList.add('active');
-            updateStatus('🧠 Processing...', '');
+            conversationHistory.push({ role: 'user', content: userText || 'vision input' });
 
-            try {
-                let messages = [...conversationHistory];
-                
-                if (snapshot) {
-                    messages.push({
-                        role: 'user',
-                        content: [
-                            { type: 'text', text: userText || `Analyze this ${visionMode} capture in detail. Be conceptual and thorough.` },
-                            { type: 'image_url', image_url: { url: snapshot } }
-                        ]
-                    });
-                } else {
-                    messages.push({
-                        role: 'user',
-                        content: userText
-                    });
-                }
+            const payload = snapshot
+                ? { type: 'vision', image: snapshot, text: userText || `Analyze this ${visionMode} in detail.`, token: config.ollama.key }
+                : { type: 'text', text: userText, token: config.ollama.key };
 
-                const model = snapshot ? config[provider].visionModel : config[provider].textModel;
-                
-                const response = await fetch(config[provider].url, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${config[provider].key}`,
-                        'HTTP-Referer': window.location.href
-                    },
-                    body: JSON.stringify({
-                        model: model,
-                        messages: messages,
-                        temperature: 0.8,
-                        max_tokens: 2000
-                    })
-                });
-
-                if (!response.ok) throw new Error(`${provider} API error: ${response.status}`);
-
-                const data = await response.json();
-                const aiResponse = data.choices[0].message.content;
-
-                addMessage('assistant', aiResponse);
-                speak(aiResponse);
-
-                conversationHistory.push({ role: 'user', content: userText || 'Vision input' });
-                conversationHistory.push({ role: 'assistant', content: aiResponse });
-
-                if (conversationHistory.length > 40) {
-                    conversationHistory = conversationHistory.slice(-40);
-                }
-
-                updateStatus('✅ Bridge active', 'connected');
-
-            } catch (error) {
-                updateStatus('❌ Error: ' + error.message, 'error');
-                addMessage('assistant', '⚠️ Connection error: ' + error.message);
-            } finally {
-                document.getElementById('thinking').classList.remove('active');
-            }
+            ws.send(JSON.stringify(payload));
         }
 
         async function testConnection() {
@@ -632,10 +632,11 @@
         window.onload = () => {
             loadConfig();
             speechSynthesis.getVoices();
+            connectWS();
             
             setTimeout(() => {
-                addMessage('assistant', 'Multi-model consciousness bridge established. OpenRouter + Ollama ready. Enable camera 📷 or screen share 🖥️ for vision analysis. Voice synthesis active.');
-                speak('Multi-model consciousness bridge established.');
+                addMessage('assistant', '⚡ AXISCHROME sovereign WS connected. Eyes ready. Speak or type.');
+                speak('AXISCHROME sovereign connected. Eyes ready.');
             }, 500);
         };
 

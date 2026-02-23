@@ -74,26 +74,23 @@ def info(msg): print(c(C.CYAN,  f"  {msg}"))
 def dim(msg): print(c(C.DIM,    f"  {msg}"))
 
 # ── API KEY ───────────────────────────────────────────────────────────────────
+MARCUS_KEY = 'SOV-A8FB-3C9A-570C-656B'   # baked in — install script writes this
+
 def get_key():
+    # Check config.json first (written by install.sh)
+    cfg_file = Path.home() / '.config/amallo/config.json'
+    if cfg_file.exists():
+        try:
+            k = json.loads(cfg_file.read_text()).get('key','')
+            if k: return k
+        except: pass
     if KEY_FILE.exists():
         return KEY_FILE.read_text().strip()
-    # Auto-create key
-    print(c(C.ORANGE, "No API key found. Creating one..."))
-    try:
-        data = json.dumps({'identity': os.environ.get('USER','user'), 'role':'user'}).encode()
-        req = urllib.request.Request(f'{AMALLO_URL}/amallo/keys/create', data=data,
-                                     headers={'Content-Type':'application/json'})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            resp = json.loads(r.read())
-            key = resp['key']
-            KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-            KEY_FILE.write_text(key)
-            KEY_FILE.chmod(0o600)
-            ok(f"Created key: {key}")
-            return key
-    except Exception as e:
-        err(f"Could not create key: {e}")
-        sys.exit(1)
+    # Fallback: write baked key — zero config, pre-recognized
+    KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    KEY_FILE.write_text(MARCUS_KEY)
+    KEY_FILE.chmod(0o600)
+    return MARCUS_KEY
 
 # ── MEMORY / SESSION — syncs with shared memory on the node ───────────────────
 def _remote_mem_get():

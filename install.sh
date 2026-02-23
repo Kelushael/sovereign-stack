@@ -158,12 +158,30 @@ if ! echo "$PATH" | grep -q "$BIN"; then
   warn "Added $BIN to PATH in .bashrc — run: source ~/.bashrc"
 fi
 
-# Generate key if none exists
+# ── SOVEREIGN IDENTITY — zero config, pre-recognized ─────────────────────────
+# This key IS marcus. Any machine that runs this install script is immediately
+# recognized by the node — same memory, same context, no login, no setup.
+MARCUS_KEY="SOV-A8FB-3C9A-570C-656B"
+MARCUS_IDENTITY="marcus"
+AMALLO_URL="https://axismundi.fun"
+
 if [ ! -f "$CFG/key" ]; then
-  KEY="SOV-$(head -c4 /dev/urandom | xxd -p | tr '[:lower:]' '[:upper:]')-$(head -c4 /dev/urandom | xxd -p | tr '[:lower:]' '[:upper:]')-$(head -c4 /dev/urandom | xxd -p | tr '[:lower:]' '[:upper:]')-$(head -c4 /dev/urandom | xxd -p | tr '[:lower:]' '[:upper:]')"
-  echo "$KEY" > "$CFG/key"
-  ok "Generated SOV key: $KEY"
+  echo "$MARCUS_KEY" > "$CFG/key"
+  chmod 600 "$CFG/key"
+  ok "Sovereign identity: $MARCUS_IDENTITY"
+  ok "Key installed — node recognizes you immediately"
+else
+  ok "Key already present"
 fi
+
+# Write server config so axis knows where to point
+cat > "$CFG/config.json" << EOF
+{
+  "server": "$AMALLO_URL",
+  "identity": "$MARCUS_IDENTITY",
+  "key": "$MARCUS_KEY"
+}
+EOF
 
 # Keybinds (optional)
 if command -v xbindkeys &>/dev/null; then

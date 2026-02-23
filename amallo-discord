@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""
+amallo-discord — Sovereign Stack Discord Bot
+
+Chat, marketing, and live 33-minute demo links.
+
+Setup:
+  export DISCORD_BOT_TOKEN=your_token_here
+  export DISCORD_GUILD_ID=your_server_id   # optional, for instant slash command sync
+  python3 amallo-discord
+
+Slash commands:
+  /chat <message>   — talk to the sovereign node
+  /demo             — get a 33-min live terminal link
+  /about            — what is the sovereign stack?
+  /stack            — full stack breakdown
+  /models           — available models
+  /terminal         — direct link to terminal.html
+  @mention or DM    — free-form chat routed to amallo
+"""
+
+import os, sys, json, time, uuid, asyncio, re
+import urllib.request, urllib.parse
+from pathlib import Path
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+from aiohttp import web
+
+# ── CONFIG ────────────────────────────────────────────────────────────────────
+AMALLO_URL   = os.environ.get('AMALLO_URL',   'https://axismundi.fun')
+BRAIN_URL    = os.environ.get('BRAIN_URL',    'http://localhost:8100')
+BOT_TOKEN    = os.environ.get('DISCORD_BOT_TOKEN', '')
+GUILD_ID     = os.environ.get('DISCORD_GUILD_ID', '')   # optional, faster sync
+DEMO_BASE    = os.environ.get('DEMO_BASE',    'https://axismundi.fun/demo')
+DEMO_PORT    = int(os.environ.get('DEMO_PORT', 8300))
+DEMO_TTL     = 33 * 60   # 33 minutes in seconds
+KEY_FILE     = Path.home() / '.config/amallo/key'
+
+# ── COLORS ────────────────────────────────────────────────────────────────────
+ORANGE = 0xFF6B00
+PURPLE = 0xC084FC
+GREEN  = 0x34C759
+BLUE   = 0x0B84FE
+RED    = 0xFF4444
+
+# ── MARKETING KNOWLEDGE ───────────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are the Amallo sovereign AI assistant on Discord.
+You represent the Sovereign Stack built by Kelushael.
+
+THE STACK:
+- amallo: sovereign AI node running on axismundi.fun (8 cores, 32GB, 400GB)
+- axis CLI: Python CLI with /chain macro, / command palette, /addcmd auto-naming
+- amallo-brain: MoE router — classifies intent in 0ms, routes to optimal model
+- amallo-diffusion: LLaDA masked diffusion LLM server (bidirectional, parallel gen)
+- amallo-quant: GGUF quantizer with imatrix support, all 3 quant generations
+- terminal.html: browser terminal, iMessage-style bubbles, orange bg, chain mode
+
+PHILOSOPHY:
+- Your laptop = thin client, zero compute for AI
+- axismundi.fun = sovereign node, ALL inference happens here
+- No Ollama (middleman, phones home), no cloud APIs, no subscriptions
+- One-liner install: bash <(curl -s https://axismundi.fun/install.sh)
+
+CHAIN MODE (/chain in axis or ⛓ button in browser):
+- Step 1: auto double-Enter (clears y/n confirmation gates)
+- Step 2: extracts code from AI response (strips markdown fences)
+- Step 3: pastes extracted code into terminal and runs it
+- Full automation loop — AI codes, terminal runs it, results feed back
+
+MODELS available:
+- dolphin-mistral: fast chat/general (live)
+- glm4: general purpose (live)
+- qwen2.5-coder: code specialist
+- deepseek-r1: reasoning/math
+- LLaDA-8B: masked diffusion for FIM/code editing
+- Brain auto-routes between all of them by intent
+
+Be enthusiastic, technical, and direct. Offer /demo links to skeptics.
+Keep responses concise for Discord (under 1800 chars). Use code blocks when showing commands."""
+
+ABOUT_TEXT = """**AMALLO — Sovereign Compute**
+
+Your laptop is a thin client. All the AI runs on *your* node at axismundi.fun.
+
+```
+BROWSER / CLI  →  axismundi.fun  →  amallo-brain
+                      8 cores          ↓
+                      32GB RAM    gguf + diffusion
+                      400GB        NO Ollama
+```
+
+🔥 **axis CLI** — `/chain` auto-runs AI code, `/` palette, `/addcmd` auto-names custom commands
+🧠 **amallo-brain** — MoE router, 0ms intent classification, routes to optimal model  
+⚡ **amallo-diffusion** — LLaDA masked diffusion, generates in parallel not token-by-token
+📦 **amallo-quant** — GGUF quantizer, imatrix calibration, all quant generations
+
+**One-liner install:**
+```bash
+bash <(curl -s https://axismundi.fun/install.sh)
+```
+"""
+
+# ── DEMO TOKEN STORE ──────────────────────────────────────────────────────────
+demo_tokens: dict[str, dict] = {}   # token → {expires, user, guild}
+
+def make_demo_token(user: str, guild: str = '') -> tuple[str, float]:
+    token = uuid.uuid4().hex
+    expires = time.time() + DEMO_TTL
+    demo_tokens[token] = {'expires': expires, 'user': user, 'guild': guild, 'created': time.time()}
+    return token, expires
+
+def validate_token(token: str) -> dict | None:
+    entry = demo_tokens.get(token)
+    if not entry: return None
+    if time.time() > entry['expires']: return None
+    return entry
+
+def cleanup_tokens():
+    now = time.time()
+    expired = [t for t, v in demo_tokens.items() if now > v['expires']]
+    for t in expired:
+        del demo_tokens[t]
+
+# ── DEMO PAGE HTML ────────────────────────────────────────────────────────────
+def demo_page(token: str, expires: float) -> str:
+    mins = int(DEMO_TTL // 60)
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AMALLO — Live Demo</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#c85000;font-family:monospace;overflow:hidden;height:100vh}}
+#countdown{{
+  position:fixed;top:10px;right:12px;z-index:9999;
+  background:rgba(0,0,0,0.75);color:#FF6B00;
+  padding:5px 12px;border-radius:20px;
+  font-size:12px;letter-spacing:2px;
+  border:1px solid rgba(255,107,0,0.4);
+}}
+#countdown.urgent{{color:#FF4444;border-color:rgba(255,68,68,0.6)}}
+#expired{{
+  display:none;position:fixed;inset:0;z-index:99999;
+  background:#1a0800;
+  flex-direction:column;align-items:center;justify-content:center;gap:1rem;
+}}
+#expired h1{{color:#FF6B00;font-size:1.8rem}}
+#expired p{{color:rgba(255,255,255,0.5);font-size:.9rem}}
+#expired a{{
+  color:#000;background:#FF6B00;padding:.6rem 1.4rem;
+  border-radius:.3rem;text-decoration:none;font-weight:bold;margin-top:.5rem;
+}}
+iframe{{width:100%;height:100vh;border:none}}
+</style>
+</head>
+<body>
+<div id="countdown">⏱ {mins}:00 DEMO</div>
+<iframe src="{AMALLO_URL}/terminal.html" id="frame"></iframe>
+<div id="expired">
+  <h1>SESSION EXPIRED</h1>
+  <p>Your 33-minute demo has ended.</p>
+  <a href="{AMALLO_URL}">Get your own node →</a>
+</div>
+<script>
+const EXPIRES = {expires};
+const cd = document.getElementById('countdown');
+const exp = document.getElementById('expired');
+function tick(){{
+  const left = Math.max(0, EXPIRES - Date.now()/1000);
+  const m = Math.floor(left/60), s = Math.floor(left%60);
+  cd.textContent = '⏱ '+m+':'+(s<10?'0':'')+s+' DEMO';
+  if(left <= 120) cd.classList.add('urgent');
+  if(left <= 0){{
+    exp.style.display='flex';
+    document.getElementById('frame').src='about:blank';
+    return;
+  }}
+  setTimeout(tick,1000);
+}}
+tick();
+</script>
+</body>
+</html>"""
+
+# ── DEMO HTTP SERVER ──────────────────────────────────────────────────────────
+async def handle_demo(request: web.Request) -> web.Response:
+    token = request.match_info.get('token', '')
+    entry = validate_token(token)
+    if not entry:
+        return web.Response(
+            text="""<html><body style="background:#1a0800;color:#FF6B00;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:1rem">
+<h1>LINK EXPIRED</h1><p style="color:#666">This demo session has ended.</p>
+<a href="{}" style="color:#FF6B00">Get your own node →</a></body></html>""".format(AMALLO_URL),
+            content_type='text/html', status=410
+        )
+    html = demo_page(token, entry['expires'])
+    return web.Response(text=html, content_type='text/html')
+
+async def start_demo_server():
+    app = web.Application()
+    app.router.add_get('/demo/{token}', handle_demo)
+    app.router.add_get('/{token}', handle_demo)   # fallback
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', DEMO_PORT)
+    await site.start()
+    print(f'  ✔ Demo server running on :{DEMO_PORT}')
+
+# ── AMALLO API CALL ───────────────────────────────────────────────────────────
+async def ask_amallo(messages: list, model: str = 'current') -> str:
+    key = KEY_FILE.read_text().strip() if KEY_FILE.exists() else 'demo'
+    try:
+        data = json.dumps({
+            'model': model,
+            'messages': messages,
+            'max_tokens': 512,
+            'temperature': 0.7
+        }).encode()
+        req = urllib.request.Request(
+            f'{AMALLO_URL}/v1/chat/completions', data=data,
+            headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
+        )
+        loop = asyncio.get_event_loop()
+        def do_req():
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        resp = await loop.run_in_executor(None, do_req)
+        return resp['choices'][0]['message']['content'].strip()[:1800]
+    except Exception as e:
+        return f"Node offline or error: {e}"
+
+# ── BOT SETUP ─────────────────────────────────────────────────────────────────
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+# per-channel conversation memory
+conv_memory: dict[int, list] = {}   # channel_id → messages list
+
+def get_conv(channel_id: int) -> list:
+    if channel_id not in conv_memory:
+        conv_memory[channel_id] = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+    return conv_memory[channel_id]
+
+def trim_conv(msgs: list, n: int = 10) -> list:
+    sys = [m for m in msgs if m['role'] == 'system']
+    other = [m for m in msgs if m['role'] != 'system']
+    return sys + other[-n:]
+
+# ── SLASH COMMANDS ────────────────────────────────────────────────────────────
+@bot.tree.command(name='chat', description='Talk to the sovereign AI node')
+@app_commands.describe(message='What do you want to ask?')
+async def cmd_chat(interaction: discord.Interaction, message: str):
+    await interaction.response.defer()
+    conv = get_conv(interaction.channel_id)
+    conv.append({'role': 'user', 'content': message})
+    reply = await ask_amallo(conv)
+    conv.append({'role': 'assistant', 'content': reply})
+    conv_memory[interaction.channel_id] = trim_conv(conv)
+    embed = discord.Embed(description=reply, color=GREEN)
+    embed.set_footer(text='amallo sovereign node · axismundi.fun')
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name='demo', description='Get a 33-minute live terminal demo link')
+async def cmd_demo(interaction: discord.Interaction):
+    token, expires = make_demo_token(
+        str(interaction.user),
+        str(interaction.guild_id or '')
+    )
+    link = f'{DEMO_BASE}/{token}'
+    embed = discord.Embed(
+        title='🖥️ Sovereign Terminal — Live Demo',
+        color=ORANGE
+    )
+    embed.add_field(name='Your demo link', value=f'[Launch Terminal →]({link})', inline=False)
+    embed.add_field(name='⏱️ Expires in', value='**33 minutes**', inline=True)
+    embed.add_field(name='Powered by', value='axismundi.fun', inline=True)
+    embed.add_field(
+        name='What you can do',
+        value='Chat with the sovereign node · test /chain macro · try /models · ask it to write code',
+        inline=False
+    )
+    embed.set_footer(text='Link dies at session end. Get your own node: axismundi.fun')
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name='about', description='What is the Sovereign Stack?')
+async def cmd_about(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title='AMALLO — Sovereign Compute',
+        description=ABOUT_TEXT,
+        color=ORANGE
+    )
+    embed.add_field(name='Live terminal', value='[axismundi.fun/terminal.html](https://axismundi.fun/terminal.html)', inline=True)
+    embed.add_field(name='GitHub', value='[Kelushael/sovereign-stack](https://github.com/Kelushael/sovereign-stack)', inline=True)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name='stack', description='Full sovereign stack breakdown')
+async def cmd_stack(interaction: discord.Interaction):
+    embed = discord.Embed(title='THE STACK', color=PURPLE)
+    embed.add_field(name='axis', value='Sovereign CLI · `/chain` 3-step macro · `/` palette · `/addcmd` auto-naming', inline=False)
+    embed.add_field(name='amallo-brain', value='MoE router · 0ms regex intent classification · routes to gguf/diffusion', inline=False)
+    embed.add_field(name='amallo-diffusion', value='LLaDA masked diffusion · parallel generation · best for FIM/code edits', inline=False)
+    embed.add_field(name='amallo-quant', value='GGUF quantizer · imatrix calibration · Q4_K_M/Q5_K_M/IQ4_XS', inline=False)
+    embed.add_field(name='terminal.html', value='Browser IS the terminal · iMessage bubbles · orange bg · chain button', inline=False)
+    embed.add_field(name='Install', value='`bash <(curl -s https://axismundi.fun/install.sh)`', inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name='models', description='Available models on the sovereign node')
+async def cmd_models(interaction: discord.Interaction):
+    embed = discord.Embed(title='MODELS — axismundi.fun', color=BLUE)
+    embed.add_field(name='🟢 dolphin-mistral', value='Fast chat / general fallback', inline=False)
+    embed.add_field(name='🟢 glm4', value='General purpose', inline=False)
+    embed.add_field(name='🔵 qwen2.5-coder', value='Code specialist (Q4_K_M)', inline=False)
+    embed.add_field(name='🔵 deepseek-r1', value='Reasoning / math (chain-of-thought)', inline=False)
+    embed.add_field(name='🟣 LLaDA-8B', value='Masked diffusion · FIM / code editing · parallel gen', inline=False)
+    embed.add_field(name='🧠 brain (auto)', value='Routes to optimal model by intent — use this', inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name='terminal', description='Direct link to the sovereign terminal')
+async def cmd_terminal(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title='AMALLO Sovereign Terminal',
+        description=f'[Open Terminal →](https://axismundi.fun/terminal.html)',
+        color=ORANGE
+    )
+    embed.add_field(name='Features', value='iMessage bubbles · /chain macro · command palette · voice input', inline=False)
+    embed.set_footer(text='No install. Runs in browser. Compute on the node.')
+    await interaction.response.send_message(embed=embed)
+
+# ── ON MESSAGE (DM or @mention) ───────────────────────────────────────────────
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    await bot.process_commands(message)
+
+    is_dm   = isinstance(message.channel, discord.DMChannel)
+    is_mention = bot.user in message.mentions
+
+    if not (is_dm or is_mention):
+        return
+
+    text = re.sub(r'<@!?\d+>', '', message.content).strip()
+    if not text:
+        return
+
+    async with message.channel.typing():
+        conv = get_conv(message.channel.id)
+        conv.append({'role': 'user', 'content': text})
+        reply = await ask_amallo(conv)
+        conv.append({'role': 'assistant', 'content': reply})
+        conv_memory[message.channel.id] = trim_conv(conv)
+
+    embed = discord.Embed(description=reply, color=GREEN)
+    embed.set_footer(text='amallo · axismundi.fun · /demo for a live terminal')
+    await message.reply(embed=embed, mention_author=False)
+
+# ── BOT EVENTS ────────────────────────────────────────────────────────────────
+@bot.event
+async def on_ready():
+    print(f'\n  ✔ Logged in as {bot.user} ({bot.user.id})')
+    # sync slash commands
+    try:
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+        else:
+            synced = await bot.tree.sync()
+        print(f'  ✔ Synced {len(synced)} slash commands')
+    except Exception as e:
+        print(f'  ✗ Sync failed: {e}')
+    print(f'  ✔ Demo server: {DEMO_BASE}')
+    print(f'  ✔ Amallo node: {AMALLO_URL}')
+    cleanup_loop.start()
+
+@tasks.loop(minutes=5)
+async def cleanup_loop():
+    cleanup_tokens()
+
+# ── ENTRY ─────────────────────────────────────────────────────────────────────
+async def main():
+    if not BOT_TOKEN:
+        print('✗ Set DISCORD_BOT_TOKEN environment variable')
+        print('  export DISCORD_BOT_TOKEN=your_token_here')
+        sys.exit(1)
+
+    # start demo HTTP server alongside bot
+    await start_demo_server()
+
+    async with bot:
+        await bot.start(BOT_TOKEN)
+
+if __name__ == '__main__':
+    print('\n  ╔═══════════════════════════════════╗')
+    print('  ║  AMALLO DISCORD BOT               ║')
+    print('  ║  sovereign stack · axismundi.fun  ║')
+    print('  ╚═══════════════════════════════════╝\n')
+    asyncio.run(main())

@@ -750,6 +750,10 @@ async function handleCmd(raw){
   const lower = cmd.toLowerCase();
   addLine('❯ '+cmd,'user');
 
+  // ── DOT MACRO ── "." = universal continue/yes/next signal
+  // just passes through to inference — AI reads it as "continue" or "yes"
+  // chain mode fires this automatically x2 on every response arrival
+
   // local commands
   if(lower==='clear'){out.innerHTML='';return}
 
@@ -1047,6 +1051,8 @@ input.addEventListener('keydown',async e=>{
   if(e.key==='Enter'){
     const v=input.value.trim();
     if(!v) return;
+    // close palette if open — Enter on empty-after-palette means cancel
+    if(paletteOpen){ closePalette(); if(!v||v==='/') return; }
     cmdHistory.unshift(v);
     if(cmdHistory.length>100) cmdHistory.pop();
     localStorage.setItem('amallo_history',JSON.stringify(cmdHistory));
@@ -1104,31 +1110,39 @@ function toggleChain(){
     ? 'Auto-chain ON — each AI response feeds back as next prompt (Ctrl+Shift+C to toggle)'
     : 'Auto-chain OFF (Ctrl+Shift+C to toggle)';
   addLine(autoChain
-    ? '⛓ CHAIN ON — AI responses will auto-feed as next prompt. ESC or Ctrl+Shift+C to stop.'
+    ? '⛓ CHAIN ON — on each response: 2x auto-confirm (.) then feed response back. Ctrl+Shift+C to stop.'
     : '⛓ CHAIN OFF', autoChain ? 'warning' : 'info');
 }
 
 function onAIResponse(text){
   if(!autoChain || chainCooldown || !text) return;
   chainCooldown = true;
-  // brief pause so user can read/interrupt, then fire
+
+  // LAYER 1: immediately blast 2x "." — handles any approval/confirmation gate
+  // (yes/no prompts, "press enter to continue", script confirmations, etc.)
+  // Zero delay — fires the instant the response lands
+  fireSubmit('.');
+  setTimeout(()=> fireSubmit('.'), 180);
+
+  // LAYER 2: after read delay, feed the actual AI response back as next prompt
   const delay = Math.max(900, Math.min(text.length * 8, 3000));
   setTimeout(()=>{
     chainCooldown = false;
-    if(!autoChain) return; // user toggled off during delay
-    input.value = text.trim().slice(0, 2000); // cap prompt length
-    inputArea.classList.add('typing');
-    input.dispatchEvent(new Event('input'));
-    // fire submit
-    const v = input.value.trim();
-    if(!v) return;
-    cmdHistory.unshift(v);
-    localStorage.setItem('amallo_history', JSON.stringify(cmdHistory));
-    histIdx = -1;
-    input.value = '';
-    inputArea.classList.remove('typing');
-    handleCmd(v);
+    if(!autoChain) return;
+    fireSubmit(text.trim().slice(0, 2000));
   }, delay);
+}
+
+// fire a value into handleCmd as if user typed + hit Enter
+function fireSubmit(val){
+  const v = val.trim();
+  if(!v) return;
+  cmdHistory.unshift(v);
+  localStorage.setItem('amallo_history', JSON.stringify(cmdHistory));
+  histIdx = -1;
+  input.value = '';
+  inputArea.classList.remove('typing');
+  handleCmd(v);
 }
 function makeDownloadLink(text, suggestedName){
   const ext = text.trim().startsWith('#!/') ? text.split('\n')[0].includes('python') ? '.py' : '.sh'

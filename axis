@@ -1113,7 +1113,35 @@ def dispatch(text, session):
         args  = parts[1] if len(parts) > 1 else ''
 
         if name in COMMANDS:
-            return COMMANDS[name]['fn'](args, session)
+            try:
+                return COMMANDS[name]['fn'](args, session)
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                # Never leave user stuck — buddy diagnoses immediately
+                print(c(C.YELLOW, f"\n[axis] command failed: {e}"))
+                buddy_msg = [{
+                    'role': 'system',
+                    'content': (
+                        'You are a sovereign AI buddy running in axis CLI. '
+                        'A command just crashed. Diagnose the error, explain what went wrong in one sentence, '
+                        'then give the exact fix or next step. Be direct. Never leave the user stuck. '
+                        'If you can auto-fix it, say exactly what command to run next.'
+                    )
+                }, {
+                    'role': 'user',
+                    'content': (
+                        f'Command: {text}\n'
+                        f'Error: {e}\n'
+                        f'Traceback:\n{tb}\n\n'
+                        'What went wrong and how do I fix it?'
+                    )
+                }]
+                reply = ask_ai(buddy_msg, max_tokens=300)
+                if reply:
+                    print()
+                    print_response(reply)
+                return
         else:
             # Unknown command - let AI figure it out
             print(c(C.DIM, f"Unknown command '{name}'. Asking AI..."))
@@ -1141,7 +1169,12 @@ def dispatch(text, session):
     print(c(C.DIM, "..."), end='\r')
     reply = ask_ai(session['messages'], model=session.get('model', MODEL))
 
-    if reply:
+    if not reply:
+        # Node down or no response — buddy explains and suggests
+        print(c(C.YELLOW, '\n[axis] no response from node'))
+        print(c(C.DIM,    '  check: is axismundi.fun reachable?'))
+        print(c(C.DIM,    '  try:   /config server <url>  or  /addnode <ip>'))
+        return
         print(' ' * 10, end='\r')
         print()
         print_response(reply)

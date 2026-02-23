@@ -141,73 +141,124 @@ html,body{
 }
 #output::-webkit-scrollbar{width:4px}
 #output::-webkit-scrollbar-track{background:transparent}
-#output::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.2);border-radius:2px}
+#output::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.25);border-radius:2px}
 
-/* ── HIGHLIGHT LINES — tight bg hugging text only, like ::selection ── */
+/* ── MESSAGE ROWS ── */
 .line-row{
   display:block;
-  padding:2px 0;
   overflow:hidden;
-  clear:both;
+  margin-bottom:4px;
+  padding:0 2px;
 }
-.line{
-  display:inline;
-  padding:1px 5px;
-  border-radius:3px;
-  line-height:2.1;
-  font-size:13px;
-  animation:line-in 0.2s ease forwards;
-  opacity:0;
-  box-decoration-break:clone;
-  -webkit-box-decoration-break:clone;
-}
-@keyframes line-in{to{opacity:1}}
 
-/* user — lime bg, black text (like selecting bright green text) */
+/* ── BASE BUBBLE ── */
+.line{
+  display:block;
+  max-width:75%;
+  padding:8px 13px;
+  font-size:13px;
+  line-height:1.5;
+  word-wrap:break-word;
+  animation:bubble-in 0.18s ease forwards;
+  opacity:0;transform:scale(0.95);
+  position:relative;
+}
+@keyframes bubble-in{to{opacity:1;transform:scale(1)}}
+
+/* ── USER — iMessage blue, right, tail bottom-right ── */
 .line.user{
-  background:var(--lime);
-  color:#0a1200;
-  font-weight:bold;
+  float:right;clear:both;
+  background:#0B84FE;
+  color:#fff;
+  border-radius:18px 18px 4px 18px;
+  text-align:left;
 }
-/* ai — deep purple bg, white text */
+.line.user::after{
+  content:'';
+  position:absolute;
+  bottom:0;right:-7px;
+  width:0;height:0;
+  border-top:8px solid transparent;
+  border-left:8px solid #0B84FE;
+  border-bottom:0 solid transparent;
+}
+
+/* ── AI — iMessage green, left, tail bottom-left ── */
 .line.ai{
-  background:rgba(80,20,140,0.85);
-  color:#f0e8ff;
+  float:left;clear:both;
+  background:#34C759;
+  color:#fff;
+  border-radius:18px 18px 18px 4px;
 }
-/* system — blue bg, dark text */
+.line.ai::after{
+  content:'';
+  position:absolute;
+  bottom:0;left:-7px;
+  width:0;height:0;
+  border-top:8px solid transparent;
+  border-right:8px solid #34C759;
+  border-bottom:0 solid transparent;
+}
+
+/* ── SYSTEM — small centered pill ── */
 .line.system{
-  background:rgba(30,60,90,0.75);
-  color:#b8e0ff;
+  float:none;clear:both;
+  display:block;
+  max-width:100%;
+  background:rgba(0,0,0,0.3);
+  color:rgba(200,230,255,0.7);
+  border-radius:10px;
   font-size:11px;
+  text-align:center;
+  padding:3px 10px;
 }
-/* success — bright lime bg, black */
+
+/* ── SUCCESS ── */
 .line.success{
-  background:rgba(130,220,60,0.75);
-  color:#001a00;
+  float:left;clear:both;
+  background:rgba(0,30,0,0.75);
+  color:#5fff7e;
+  border-radius:18px 18px 18px 4px;
+  font-size:12px;
 }
-/* error — red bg, white */
+
+/* ── ERROR ── */
 .line.error{
-  background:rgba(180,30,30,0.8);
+  float:left;clear:both;
+  background:rgba(180,20,20,0.8);
   color:#ffe8e8;
+  border-radius:18px 18px 18px 4px;
+  font-size:12px;
 }
-/* warning — orange bg, black */
+
+/* ── WARNING ── */
 .line.warning{
-  background:rgba(220,100,0,0.75);
-  color:#1a0500;
+  float:left;clear:both;
+  background:rgba(200,80,0,0.75);
+  color:#fff3e0;
+  border-radius:18px 18px 18px 4px;
+  font-size:12px;
 }
-/* info — dark translucent, dim text */
+
+/* ── INFO ── */
 .line.info{
-  background:rgba(0,0,0,0.35);
-  color:rgba(255,255,255,0.5);
+  float:none;clear:both;
+  display:block;
+  max-width:100%;
+  background:rgba(0,0,0,0.25);
+  color:rgba(255,255,255,0.45);
+  border-radius:10px;
   font-size:11px;
+  text-align:center;
+  padding:2px 8px;
 }
 
 /* typing cursor */
 .typing-cursor{
   display:inline-block;width:7px;height:13px;
-  background:#c084fc;
+  background:#fff;
   animation:blink 0.7s step-end infinite;
-  vertical-align:middle;margin-left:2px;
+  vertical-align:middle;margin-left:2px;border-radius:1px;
 }
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}

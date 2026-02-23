@@ -643,6 +643,108 @@ def cmd_config(args, session):
         config_path.write_text(json.dumps(cfg, indent=2))
         return f'Set {key} = {val}'
 
+VCHAT_LOG = Path.home() / '.vchat-log.txt'
+_VCHAT_ACTIVE = {'on': False}
+
+def cmd_vchat(args, session):
+    """
+    /vchat — invisible voice chat. Speak → transcribe → send to amallo → response spoken aloud.
+    /vchat start   : begin listening loop
+    /vchat stop    : stop voice chat
+    /vchat log     : show session transcript
+    /vchat clear   : clear log
+    """
+    import threading, datetime
+    sub = args.strip().lower() if args.strip() else 'start'
+
+    if sub == 'log':
+        if VCHAT_LOG.exists():
+            return VCHAT_LOG.read_text()
+        return '(no vchat log yet)'
+
+    if sub == 'clear':
+        VCHAT_LOG.write_text('')
+        return 'vchat log cleared'
+
+    if sub == 'stop':
+        _VCHAT_ACTIVE['on'] = False
+        return '[vchat] stopped'
+
+    if sub == 'start':
+        if _VCHAT_ACTIVE['on']:
+            return '[vchat] already running — speak now'
+        _VCHAT_ACTIVE['on'] = True
+
+        def vchat_loop():
+            nd = str(Path.home() / 'nerd-dictation/nerd-dictation')
+            spd = 'spd-say'
+            token = session.get('token','')
+            model = session.get('model', MODEL)
+            url   = session.get('amallo_url', AMALLO_URL)
+
+            def log(role, text):
+                ts = datetime.datetime.now().strftime('%H:%M:%S')
+                with open(VCHAT_LOG, 'a') as f:
+                    f.write(f'[{ts}] {role}: {text}\n')
+
+            def say(text):
+                # strip code-like lines
+                clean = ' '.join(
+                    l.strip() for l in text.splitlines()
+                    if l.strip() and not l.strip().startswith(('$','#','```','>>>','|','{'))
+                    and not l.startswith('    ')
+                )
+                if clean:
+                    subprocess.Popen([spd, '-r', '20', clean])
+
+            def transcribe():
+                """One-shot nerd-dictation capture (~5 seconds)"""
+                try:
+                    env = os.environ.copy()
+                    env['DISPLAY'] = ':0'
+                    r = subprocess.run(
+                        [nd, 'begin', '--timeout=5', '--output=STDOUT'],
+                        capture_output=True, text=True, timeout=10, env=env
+                    )
+                    return r.stdout.strip()
+                except Exception as e:
+                    return ''
+
+            say('Voice chat active. Speak after the beep.')
+            log('SYSTEM', 'vchat session started')
+
+            while _VCHAT_ACTIVE['on']:
+                try:
+                    # signal ready
+                    subprocess.run(['spd-say', '-r', '50', 'go'], capture_output=True)
+                    spoken = transcribe()
+                    if not spoken or len(spoken) < 2:
+                        continue
+                    log('MARCUS', spoken)
+                    # send to amallo
+                    msgs = [{'role':'user','content': spoken}]
+                    payload = json.dumps({'model': model, 'messages': msgs, 'stream': False})
+                    req = urllib.request.Request(
+                        url.rstrip('/') + '/v1/chat/completions',
+                        data=payload.encode(),
+                        headers={'Content-Type':'application/json','Authorization':f'Bearer {token}'},
+                        method='POST'
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read())
+                    reply = data['choices'][0]['message']['content']
+                    log('AMALLO', reply)
+                    say(reply)
+                except Exception as e:
+                    log('ERROR', str(e))
+                    time.sleep(1)
+
+        t = threading.Thread(target=vchat_loop, daemon=True)
+        t.start()
+        return '[vchat] started — speak after each "go" beep. /vchat stop to end. /vchat log to review.'
+
+    return 'Usage: /vchat [start|stop|log|clear]'
+
 # Register new commands in COMMANDS dict
 _new_cmds = [
     ('/ls',       'List directory contents',       '/ls [path] [--depth N]',         cmd_ls),
@@ -660,6 +762,7 @@ _new_cmds = [
     ('/output',   'Read process session output',    '/output <session_id>',           cmd_output),
     ('/sessions', 'List active process sessions',   '/sessions',                      cmd_sessions),
     ('/config',   'Get/set axis config',            '/config [key] [value]',          cmd_config),
+    ('/vchat',    'Invisible voice chat w/ log',   '/vchat [start|stop|log|clear]',  cmd_vchat),
 ]
 for _name, _desc, _usage, _fn in _new_cmds:
     COMMANDS[_name] = {'fn': _fn, 'usage': _usage, 'desc': _desc}

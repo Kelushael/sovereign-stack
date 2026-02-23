@@ -13,11 +13,14 @@ if tmux has-session -t $SESSION 2>/dev/null; then
   exit 0
 fi
 
-# fresh: main shell left | axis chat right
+# chat FULL SCREEN — code/work hidden in background window
 tmux new-session -d -s $SESSION -x 220 -y 50
-tmux split-window -t $SESSION -h -p 60
-tmux send-keys -t $SESSION:0.1 "axis" Enter
-tmux select-pane -t $SESSION:0.0
-tmux bind -n S-Right select-pane -t $SESSION:0.1
-tmux bind -n S-Left  select-pane -t $SESSION:0.0
+tmux rename-window -t $SESSION chat
+tmux send-keys -t $SESSION:chat "axis" Enter
+# background window for builds/code — invisible until needed
+tmux new-window -t $SESSION -n work
+tmux select-window -t $SESSION:chat
+# Shift+Right = peek work window | Shift+Left = back to chat
+tmux bind -n S-Right select-window -t $SESSION:work
+tmux bind -n S-Left  select-window -t $SESSION:chat
 tmux attach-session -t $SESSION

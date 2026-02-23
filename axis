@@ -391,6 +391,56 @@ def cmd_history(args, session):
         color = C.GREEN if role == 'user' else C.BLUE
         print(c(color, f"{role}: ") + content)
 
+@command('/cymatics', aliases=('/cym', '/mandala'),
+         usage='/cymatics <text>',
+         desc='Visualize AI response as cymatic frequency mandala')
+def cmd_cymatics(args, session):
+    text = args.strip()
+    if not text:
+        text = input(c(C.ORANGE, "Text to visualize: ")).strip()
+    if not text:
+        return
+    
+    try:
+        tools_dir = Path(__file__).parent / 'tools'
+        cymatics_script = tools_dir / 'cymatics.py'
+        
+        if not cymatics_script.exists():
+            err(f"Cymatics tool not found at {cymatics_script}")
+            return
+        
+        # Generate cymatics
+        result = subprocess.run(['python3', str(cymatics_script), text],
+                              capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0:
+            err(f"Cymatics generation failed: {result.stderr}")
+            return
+        
+        png_path = result.stdout.strip().split('\n')[-1]
+        
+        if not png_path or not Path(png_path).exists():
+            err("Cymatics image not created")
+            return
+        
+        # Open image (xdg-open, open on macOS, or display on Linux)
+        try:
+            if subprocess.run(['which', 'xdg-open'], capture_output=True).returncode == 0:
+                subprocess.Popen(['xdg-open', png_path])
+            elif subprocess.run(['which', 'open'], capture_output=True).returncode == 0:
+                subprocess.Popen(['open', png_path])
+            elif subprocess.run(['which', 'display'], capture_output=True).returncode == 0:
+                subprocess.Popen(['display', png_path])
+            else:
+                ok(f"Cymatics saved: {png_path}")
+                return
+        except:
+            pass
+        
+        ok(f"Cymatics mandala opened: {png_path}")
+    except Exception as e:
+        err(f"Error: {e}")
+
 @command('/help', aliases=('/?', '/commands'),
          usage='/help',
          desc='Show all commands')
@@ -649,10 +699,11 @@ _VCHAT_ACTIVE = {'on': False}
 def cmd_vchat(args, session):
     """
     /vchat — invisible voice chat. Speak → transcribe → send to amallo → response spoken aloud.
-    /vchat start   : begin listening loop
-    /vchat stop    : stop voice chat
-    /vchat log     : show session transcript
-    /vchat clear   : clear log
+    /vchat start        : begin listening loop (classic beep-pause-transcribe 5s windows)
+    /vchat stream       : streaming mode with overlapping 3s windows & real-time responses
+    /vchat stop         : stop voice chat
+    /vchat log          : show session transcript
+    /vchat clear        : clear log
     """
     import threading, datetime
     sub = args.strip().lower() if args.strip() else 'start'
@@ -670,6 +721,21 @@ def cmd_vchat(args, session):
         _VCHAT_ACTIVE['on'] = False
         return '[vchat] stopped'
 
+    # Load token & config (shared by both start and stream)
+    token = session.get('token','')
+    model = session.get('model', MODEL)
+    url   = session.get('amallo_url', AMALLO_URL)
+    
+    # Try loading from axis-mundi config if not in session
+    if not token:
+        try:
+            axis_cfg = Path.home() / '.config/axis-mundi/config.json'
+            if axis_cfg.exists():
+                cfg = json.loads(axis_cfg.read_text())
+                token = cfg.get('token', '')
+                url = cfg.get('server', url)
+        except: pass
+
     if sub == 'start':
         if _VCHAT_ACTIVE['on']:
             return '[vchat] already running — speak now'
@@ -678,9 +744,6 @@ def cmd_vchat(args, session):
         def vchat_loop():
             nd = str(Path.home() / 'nerd-dictation/nerd-dictation')
             spd = 'spd-say'
-            token = session.get('token','')
-            model = session.get('model', MODEL)
-            url   = session.get('amallo_url', AMALLO_URL)
 
             def log(role, text):
                 ts = datetime.datetime.now().strftime('%H:%M:%S')
@@ -743,7 +806,129 @@ def cmd_vchat(args, session):
         t.start()
         return '[vchat] started — speak after each "go" beep. /vchat stop to end. /vchat log to review.'
 
-    return 'Usage: /vchat [start|stop|log|clear]'
+    if sub == 'stream':
+        # Streaming mode with overlapping windows & real-time responses
+        if _VCHAT_ACTIVE['on']:
+            return '[vchat stream] already running'
+        _VCHAT_ACTIVE['on'] = True
+        
+        # Check/install pyaudio
+        try:
+            import pyaudio
+        except ImportError:
+            try:
+                subprocess.run(['pip', 'install', 'pyaudio'], capture_output=True, timeout=60)
+            except Exception as e:
+                _VCHAT_ACTIVE['on'] = False
+                return f'[vchat stream] Failed to install pyaudio: {e}'
+
+        def vchat_stream_loop():
+            import pyaudio
+            import wave
+            import threading as thr
+            
+            spd = 'spd-say'
+
+            def log(role, text):
+                ts = datetime.datetime.now().strftime('%H:%M:%S')
+                with open(VCHAT_LOG, 'a') as f:
+                    f.write(f'[{ts}] {role}: {text}\n')
+
+            def say(text):
+                """Speak text, stripping code-like lines."""
+                clean = ' '.join(
+                    l.strip() for l in text.splitlines()
+                    if l.strip() and not l.strip().startswith(('$','#','```','>>>','|','{'))
+                    and not l.startswith('    ')
+                )
+                if clean:
+                    subprocess.Popen([spd, '-r', '20', clean])
+
+            def say_sentence(text):
+                """Speak a sentence (ends with . ! ?)"""
+                text = text.strip()
+                if text and any(text.endswith(p) for p in '.!?'):
+                    say(text)
+
+            def capture_audio_chunk(duration=3.0):
+                """Capture audio for ~duration seconds and transcribe."""
+                try:
+                    nd = str(Path.home() / 'nerd-dictation/nerd-dictation')
+                    env = os.environ.copy()
+                    env['DISPLAY'] = ':0'
+                    # Use shorter timeout for streaming feel
+                    r = subprocess.run(
+                        [nd, 'begin', f'--timeout={int(duration)}', '--output=STDOUT'],
+                        capture_output=True, text=True, timeout=int(duration)+5, env=env
+                    )
+                    return r.stdout.strip()
+                except Exception as e:
+                    return ''
+
+            def stream_response(spoken_text):
+                """Send to API with stream=true, parse tokens, speak sentences."""
+                try:
+                    msgs = [{'role':'user','content': spoken_text}]
+                    payload = json.dumps({'model': model, 'messages': msgs, 'stream': True})
+                    req = urllib.request.Request(
+                        url.rstrip('/') + '/v1/chat/completions',
+                        data=payload.encode(),
+                        headers={'Content-Type':'application/json','Authorization':f'Bearer {token}'},
+                        method='POST'
+                    )
+                    full_response = ''
+                    sentence_buffer = ''
+                    
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        for line in resp:
+                            line_str = line.decode('utf-8').strip()
+                            if not line_str or line_str.startswith(':'):
+                                continue
+                            if line_str.startswith('data: '):
+                                line_str = line_str[6:]
+                            if line_str == '[DONE]':
+                                break
+                            try:
+                                data = json.loads(line_str)
+                                token_content = data.get('choices', [{}])[0].get('delta', {}).get('content', '')
+                                if token_content:
+                                    full_response += token_content
+                                    sentence_buffer += token_content
+                                    # Check if sentence is complete
+                                    if any(sentence_buffer.endswith(p) for p in '.!?'):
+                                        say_sentence(sentence_buffer)
+                                        sentence_buffer = ''
+                            except: pass
+                    
+                    # Speak any remaining sentence
+                    if sentence_buffer.strip():
+                        say_sentence(sentence_buffer + '.')
+                    
+                    return full_response
+                except Exception as e:
+                    log('ERROR', f'stream_response: {str(e)}')
+                    return ''
+
+            log('SYSTEM', 'vchat stream session started')
+            say('Streaming voice chat active. Listening continuously.')
+
+            while _VCHAT_ACTIVE['on']:
+                try:
+                    spoken = capture_audio_chunk(duration=3.0)
+                    if spoken and len(spoken) > 2:
+                        log('MARCUS', spoken)
+                        reply = stream_response(spoken)
+                        if reply:
+                            log('AMALLO', reply)
+                except Exception as e:
+                    log('ERROR', str(e))
+                    time.sleep(1)
+
+        t = threading.Thread(target=vchat_stream_loop, daemon=True)
+        t.start()
+        return '[vchat stream] started — continuous 3s listening with real-time responses. /vchat stop to end.'
+
+    return 'Usage: /vchat [start|stream|stop|log|clear]'
 
 # Register new commands in COMMANDS dict
 _new_cmds = [
@@ -762,7 +947,7 @@ _new_cmds = [
     ('/output',   'Read process session output',    '/output <session_id>',           cmd_output),
     ('/sessions', 'List active process sessions',   '/sessions',                      cmd_sessions),
     ('/config',   'Get/set axis config',            '/config [key] [value]',          cmd_config),
-    ('/vchat',    'Invisible voice chat w/ log',   '/vchat [start|stop|log|clear]',  cmd_vchat),
+    ('/vchat',    'Invisible voice chat w/ log',   '/vchat [start|stream|stop|log|clear]',  cmd_vchat),
 ]
 for _name, _desc, _usage, _fn in _new_cmds:
     COMMANDS[_name] = {'fn': _fn, 'usage': _usage, 'desc': _desc}

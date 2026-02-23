@@ -80,13 +80,22 @@ footer{color:#333;font-size:.73rem;text-align:center;padding-top:2rem;border-top
 <section>
   <h2 class="st">ARCHITECTURE</h2>
   <div class="arch"><pre>
-  <span class="ho">YOUR LAPTOP</span>  thin client, zero compute, zero RAM used for AI
+  <span class="hb">BROWSER</span>  axismundi.fun/terminal.html
+      |    iMessage bubbles · orange bg · command palette (/)
+      |    ⛓ chain mode: double-y → extract code → paste+run
+      |    /addcmd (describe it → AI names it)
+      |
+  <span class="ho">YOUR LAPTOP</span>  thin client, zero compute, zero RAM for AI
+      |
+      |  axis CLI  (Python, ~/.local/bin/axis)
+      |    /chain  3-step macro: double Enter → extract code → run
+      |    /  command palette · /addcmd · /scrape · /run · /read
       |
       |  HTTPS  (OpenAI-compatible API)
       v
   <span class="ho">axismundi.fun</span>  187.77.208.28  8 cores  32GB  400GB
       |
-      +-- <span class="hp">amallo-brain</span>  :8100   MoE router  (intent to optimal backend)
+      +-- <span class="hp">amallo-brain</span>  :8100   MoE router  (intent → optimal backend)
       |       |
       |       +-- <span class="ho">gguf backend</span>   llama.cpp direct  NO Ollama
       |       |       +-- dolphin-mistral   chat / fallback
@@ -99,8 +108,9 @@ footer{color:#333;font-size:.73rem;text-align:center;padding-top:2rem;border-top
       |
       +-- <span class="hl">amallo_server.py</span>  true sovereign: llama-cli + GGUF, NO Ollama
 
-  <span class="hb">KEY INSIGHT:</span>  Ollama runs on YOUR machine, uses YOUR RAM, phones home.
-                Amallo runs on YOUR NODE. Your laptop is just a terminal.</pre></div>
+  <span class="hb">KEY INSIGHT:</span>  Browser IS the terminal. CLI IS the source of truth.
+                Build once in axis → every surface inherits automatically.
+                Ollama = middleman, phones home. Amallo = your node, your rules.</pre></div>
 </section>
 
 <section>
@@ -108,8 +118,17 @@ footer{color:#333;font-size:.73rem;text-align:center;padding-top:2rem;border-top
   <div class="grid">
     <div class="card">
       <div class="cn">axis <span class="badge bcore">CORE</span></div>
-      <div class="cc">axis "question" &nbsp;|&nbsp; axis --model auto "..." &nbsp;|&nbsp; axis (REPL)</div>
-      <div class="cd">Unified sovereign CLI. One-shot queries, interactive REPL, slash commands (/scrape /run /read /save /model), session memory, auto-routes to brain/diffusion/gguf.</div>
+      <div class="cc">axis "question" &nbsp;|&nbsp; axis (REPL) &nbsp;|&nbsp; axis --model auto "..."</div>
+      <div class="cd">Sovereign CLI. Interactive REPL, slash commands, session memory, multi-backend routing.<br><br>
+        <b>/chain</b> — 3-step auto macro: double-Enter (clears y/n gates) → extract code from response → paste + run.<br>
+        <b>/</b> — command palette, arrow-navigate all commands.<br>
+        <b>/addcmd</b> — describe what it does, name auto-generated.
+      </div>
+    </div>
+    <div class="card">
+      <div class="cn">terminal.html <span class="badge bnew">NEW</span></div>
+      <div class="cc">axismundi.fun/terminal.html</div>
+      <div class="cd">Browser IS the terminal — same axis behavior, pretty face. iMessage-style bubbles on orange bg: blue (you) right, green (AI) left. ⛓ chain button + Ctrl+Shift+C. / palette. /addcmd in-browser.</div>
     </div>
     <div class="card">
       <div class="cn">amallo-brain <span class="badge bnew">NEW</span></div>

@@ -1110,7 +1110,7 @@ function toggleChain(){
     ? 'Auto-chain ON — each AI response feeds back as next prompt (Ctrl+Shift+C to toggle)'
     : 'Auto-chain OFF (Ctrl+Shift+C to toggle)';
   addLine(autoChain
-    ? '⛓ CHAIN ON — on each response: 2x auto-confirm (.) then feed response back. Ctrl+Shift+C to stop.'
+    ? '⛓ CHAIN ON  1) double-Enter (clears y/n)  2) extract code  3) paste+run. Ctrl+Shift+C to stop.'
     : '⛓ CHAIN OFF', autoChain ? 'warning' : 'info');
 }
 
@@ -1118,19 +1118,31 @@ function onAIResponse(text){
   if(!autoChain || chainCooldown || !text) return;
   chainCooldown = true;
 
-  // LAYER 1: immediately blast 2x "." — handles any approval/confirmation gate
-  // (yes/no prompts, "press enter to continue", script confirmations, etc.)
-  // Zero delay — fires the instant the response lands
-  fireSubmit('.');
-  setTimeout(()=> fireSubmit('.'), 180);
+  // STEP 1: double-tap Enter immediately — clears any y/n / "press enter" gate
+  // before we try to paste code. Fires blind, no harm if nothing is waiting.
+  fireSubmit('y');
+  setTimeout(()=> fireSubmit('y'), 180);
 
-  // LAYER 2: after read delay, feed the actual AI response back as next prompt
+  // STEP 2: extract just the code from the response (strip markdown fences etc.)
+  // then paste + Enter as if user typed it
   const delay = Math.max(900, Math.min(text.length * 8, 3000));
   setTimeout(()=>{
     chainCooldown = false;
     if(!autoChain) return;
-    fireSubmit(text.trim().slice(0, 2000));
+    fireSubmit(extractCode(text).slice(0, 2000));
   }, delay);
+}
+
+// pull the first code block out of a response, or fall back to full text
+function extractCode(text){
+  // match ```lang\n...code...\n``` — grab just the inner content
+  const fenced = text.match(/```(?:\w+)?\n?([\s\S]*?)```/);
+  if(fenced) return fenced[1].trim();
+  // match single-backtick inline code if that's all there is
+  const inline = text.match(/`([^`]+)`/);
+  if(inline && text.replace(/`[^`]+`/g,'').trim().length < 20) return inline[1].trim();
+  // no code block — return full text (it's a plain response, let it through)
+  return text.trim();
 }
 
 // fire a value into handleCmd as if user typed + hit Enter

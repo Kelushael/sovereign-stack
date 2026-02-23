@@ -407,6 +407,263 @@ def cmd_help(args, session):
     print(c(C.DIM, "  Or just type anything — axis will figure it out."))
     print()
 
+# ── FILESYSTEM / PROCESS / CONFIG COMMANDS ───────────────────────────────────
+
+def cmd_ls(args, session):
+    """List directory contents. Usage: /ls [path] [--depth N]"""
+    parts = args.split() if args else ['.']
+    depth = 2
+    path = '.'
+    i = 0
+    while i < len(parts):
+        if parts[i] == '--depth' and i+1 < len(parts):
+            depth = int(parts[i+1]); i += 2
+        else:
+            path = parts[i]; i += 1
+    path = os.path.expanduser(path)
+    lines = []
+    def walk(p, d):
+        if d < 0: return
+        try:
+            entries = sorted(os.scandir(p), key=lambda e: (not e.is_dir(), e.name))
+        except PermissionError:
+            lines.append(f"[DENIED] {p}"); return
+        for e in entries:
+            prefix = '[DIR] ' if e.is_dir() else '[FILE]'
+            lines.append(f"{prefix} {e.path}")
+            if e.is_dir() and d > 0:
+                walk(e.path, d-1)
+    walk(path, depth-1)
+    return '\n'.join(lines) or '(empty)'
+
+def cmd_cat(args, session):
+    """Read file contents. Usage: /cat <file> [--offset N] [--lines N]"""
+    parts = args.split()
+    path = offset = length = None
+    i = 0
+    while i < len(parts):
+        if parts[i] == '--offset' and i+1 < len(parts):
+            offset = int(parts[i+1]); i += 2
+        elif parts[i] == '--lines' and i+1 < len(parts):
+            length = int(parts[i+1]); i += 2
+        else:
+            path = parts[i]; i += 1
+    if not path: return 'Usage: /cat <file> [--offset N] [--lines N]'
+    path = os.path.expanduser(path)
+    try:
+        lines = open(path).readlines()
+        start = offset or 0
+        end = start + length if length else len(lines)
+        numbered = [f"{start+i+1:4d} | {l.rstrip()}" for i, l in enumerate(lines[start:end])]
+        return '\n'.join(numbered)
+    except Exception as e:
+        return f'Error: {e}'
+
+def cmd_write(args, session):
+    """Write content to file. Usage: /write <file> <content>"""
+    parts = args.split(' ', 1)
+    if len(parts) < 2: return 'Usage: /write <file> <content>'
+    path = os.path.expanduser(parts[0])
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    open(path, 'w').write(parts[1])
+    return f'Written: {path} ({len(parts[1])} chars)'
+
+def cmd_mkdir(args, session):
+    """Create directory. Usage: /mkdir <path>"""
+    path = os.path.expanduser(args.strip())
+    os.makedirs(path, exist_ok=True)
+    return f'Created: {path}'
+
+def cmd_mv(args, session):
+    """Move/rename file. Usage: /mv <src> <dst>"""
+    parts = args.split()
+    if len(parts) != 2: return 'Usage: /mv <src> <dst>'
+    shutil.move(os.path.expanduser(parts[0]), os.path.expanduser(parts[1]))
+    return f'Moved: {parts[0]} → {parts[1]}'
+
+def cmd_stat(args, session):
+    """Get file metadata. Usage: /stat <path>"""
+    path = os.path.expanduser(args.strip())
+    try:
+        s = os.stat(path)
+        is_dir = os.path.isdir(path)
+        info_d = {
+            'path': path,
+            'type': 'directory' if is_dir else 'file',
+            'size': s.st_size,
+            'created': time.ctime(s.st_ctime),
+            'modified': time.ctime(s.st_mtime),
+            'permissions': oct(s.st_mode)[-4:],
+        }
+        if not is_dir:
+            try:
+                with open(path) as f:
+                    lns = f.readlines()
+                info_d['lineCount'] = len(lns)
+                info_d['lastLine'] = len(lns) - 1
+            except: pass
+        return '\n'.join(f'{k}: {v}' for k,v in info_d.items())
+    except Exception as e:
+        return f'Error: {e}'
+
+def cmd_find(args, session):
+    """Search for files. Usage: /find <pattern> [path]"""
+    parts = args.split()
+    if not parts: return 'Usage: /find <pattern> [path]'
+    pattern = parts[0]
+    path = parts[1] if len(parts) > 1 else '.'
+    result = subprocess.run(['find', path, '-name', f'*{pattern}*', '-not', '-path', '*/.*'],
+                           capture_output=True, text=True, timeout=10)
+    return result.stdout.strip() or 'No results'
+
+def cmd_grep(args, session):
+    """Search file contents. Usage: /grep <pattern> [path]"""
+    parts = args.split(' ', 1)
+    if not parts: return 'Usage: /grep <pattern> [path]'
+    pattern = parts[0]
+    path = parts[1].strip() if len(parts) > 1 else '.'
+    result = subprocess.run(['rg', '--no-heading', '-n', pattern, path],
+                           capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        result = subprocess.run(['grep', '-rn', pattern, path],
+                               capture_output=True, text=True, timeout=10)
+    out = result.stdout.strip()
+    lines = out.split('\n')
+    return '\n'.join(lines[:50]) + (f'\n... ({len(lines)-50} more)' if len(lines) > 50 else '') if out else 'No matches'
+
+def cmd_ps(args, session):
+    """List running processes. Usage: /ps [filter]"""
+    result = subprocess.run(['ps', 'aux', '--sort=-%cpu'],
+                           capture_output=True, text=True)
+    lines = result.stdout.strip().split('\n')
+    header = lines[0]
+    procs = lines[1:]
+    if args.strip():
+        procs = [p for p in procs if args.strip().lower() in p.lower()]
+    out = [header] + procs[:30]
+    return '\n'.join(out)
+
+def cmd_kill(args, session):
+    """Kill process by PID. Usage: /kill <pid>"""
+    import signal
+    try:
+        pid = int(args.strip())
+        os.kill(pid, signal.SIGTERM)
+        return f'Sent SIGTERM to PID {pid}'
+    except Exception as e:
+        return f'Error: {e}'
+
+# Persistent process sessions
+_PROCS = {}
+
+def cmd_proc(args, session):
+    """Start a persistent process session. Usage: /proc <command>"""
+    if not args.strip(): return 'Usage: /proc <command>'
+    pid_key = uuid.uuid4().hex[:8]
+    proc = subprocess.Popen(
+        args.strip(), shell=True, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+    )
+    _PROCS[pid_key] = proc
+    return f'Started session [{pid_key}] PID={proc.pid}\nUse: /send {pid_key} <input>\n     /output {pid_key}\n     /kill-session {pid_key}'
+
+def cmd_send(args, session):
+    """Send input to a process session. Usage: /send <session_id> <input>"""
+    import fcntl, select
+    parts = args.split(' ', 1)
+    if len(parts) < 2: return 'Usage: /send <session_id> <input>'
+    sid, inp = parts
+    proc = _PROCS.get(sid)
+    if not proc: return f'No session: {sid}'
+    try:
+        proc.stdin.write(inp + '\n'); proc.stdin.flush()
+        time.sleep(0.3)
+        output = []
+        flags = fcntl.fcntl(proc.stdout, fcntl.F_GETFL)
+        fcntl.fcntl(proc.stdout, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if not line: break
+                output.append(line.rstrip())
+        except: pass
+        fcntl.fcntl(proc.stdout, fcntl.F_SETFL, flags)
+        return '\n'.join(output) if output else '(no output yet — use /output <sid>)'
+    except Exception as e:
+        return f'Error: {e}'
+
+def cmd_output(args, session):
+    """Read output from process session. Usage: /output <session_id>"""
+    import fcntl
+    sid = args.strip()
+    proc = _PROCS.get(sid)
+    if not proc: return f'No session: {sid}'
+    output = []
+    flags = fcntl.fcntl(proc.stdout, fcntl.F_GETFL)
+    fcntl.fcntl(proc.stdout, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    try:
+        while True:
+            line = proc.stdout.readline()
+            if not line: break
+            output.append(line.rstrip())
+    except: pass
+    fcntl.fcntl(proc.stdout, fcntl.F_SETFL, flags)
+    return '\n'.join(output) if output else '(no new output)'
+
+def cmd_sessions(args, session):
+    """List active process sessions. Usage: /sessions"""
+    if not _PROCS: return 'No active sessions'
+    lines = []
+    for sid, proc in list(_PROCS.items()):
+        alive = proc.poll() is None
+        status = 'running' if alive else f'exited({proc.returncode})'
+        lines.append(f'[{sid}] PID={proc.pid} {status}')
+        if not alive: del _PROCS[sid]
+    return '\n'.join(lines)
+
+def cmd_config(args, session):
+    """Get/set axis config. Usage: /config [key] [value]"""
+    config_path = Path.home() / '.config/amallo/axis-config.json'
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        cfg = json.loads(config_path.read_text())
+    except:
+        cfg = {'amallo_url': AMALLO_URL, 'model': MODEL, 'allowed_dirs': [str(Path.home())]}
+
+    parts = args.strip().split(' ', 1) if args.strip() else []
+    if not parts:
+        return json.dumps(cfg, indent=2)
+    elif len(parts) == 1:
+        return str(cfg.get(parts[0], f'Key not found: {parts[0]}'))
+    else:
+        key, val = parts
+        try: val = json.loads(val)
+        except: pass
+        cfg[key] = val
+        config_path.write_text(json.dumps(cfg, indent=2))
+        return f'Set {key} = {val}'
+
+# Register new commands in COMMANDS dict
+_new_cmds = [
+    ('/ls',       'List directory contents',       '/ls [path] [--depth N]',         cmd_ls),
+    ('/cat',      'Read file contents',             '/cat <file> [--offset N] [--lines N]', cmd_cat),
+    ('/write',    'Write file',                     '/write <file> <content>',        cmd_write),
+    ('/mkdir',    'Create directory',               '/mkdir <path>',                  cmd_mkdir),
+    ('/mv',       'Move/rename file',               '/mv <src> <dst>',                cmd_mv),
+    ('/stat',     'File metadata',                  '/stat <path>',                   cmd_stat),
+    ('/find',     'Find files by name',             '/find <pattern> [path]',         cmd_find),
+    ('/grep',     'Search file contents',           '/grep <pattern> [path]',         cmd_grep),
+    ('/ps',       'List processes',                 '/ps [filter]',                   cmd_ps),
+    ('/kill',     'Kill process by PID',            '/kill <pid>',                    cmd_kill),
+    ('/proc',     'Start process session',          '/proc <command>',                cmd_proc),
+    ('/send',     'Send input to process session',  '/send <session_id> <input>',     cmd_send),
+    ('/output',   'Read process session output',    '/output <session_id>',           cmd_output),
+    ('/sessions', 'List active process sessions',   '/sessions',                      cmd_sessions),
+    ('/config',   'Get/set axis config',            '/config [key] [value]',          cmd_config),
+]
+for _name, _desc, _usage, _fn in _new_cmds:
+    COMMANDS[_name] = {'fn': _fn, 'usage': _usage, 'desc': _desc}
+
 # ── DISPATCH SLASH COMMAND ────────────────────────────────────────────────────
 def dispatch(text, session):
     """Handle slash command or pass to AI."""
@@ -489,6 +746,128 @@ def extract_code(text):
         return m.group(1).strip()
     return text.strip()
 
+# ── MCP SERVER MODE ──────────────────────────────────────────────────────────
+
+MCP_TOOLS = [
+    {"name": "read_file", "description": "Read file contents", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "number"}, "length": {"type": "number"}}, "required": ["path"]}},
+    {"name": "write_file", "description": "Write file contents", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+    {"name": "list_directory", "description": "List directory", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "depth": {"type": "number"}}, "required": ["path"]}},
+    {"name": "create_directory", "description": "Create directory", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+    {"name": "move_file", "description": "Move/rename file", "inputSchema": {"type": "object", "properties": {"source": {"type": "string"}, "destination": {"type": "string"}}, "required": ["source", "destination"]}},
+    {"name": "get_file_info", "description": "File metadata", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+    {"name": "start_search", "description": "Search for files or content", "inputSchema": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "type": {"type": "string", "enum": ["file", "content"]}}, "required": ["pattern"]}},
+    {"name": "list_processes", "description": "List running processes", "inputSchema": {"type": "object", "properties": {"filter": {"type": "string"}}}},
+    {"name": "kill_process", "description": "Kill process by PID", "inputSchema": {"type": "object", "properties": {"pid": {"type": "number"}}, "required": ["pid"]}},
+    {"name": "start_process", "description": "Start a terminal process", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+    {"name": "interact_with_process", "description": "Send input to process", "inputSchema": {"type": "object", "properties": {"pid": {"type": "string"}, "input": {"type": "string"}}, "required": ["pid", "input"]}},
+    {"name": "read_process_output", "description": "Read process output", "inputSchema": {"type": "object", "properties": {"pid": {"type": "string"}}, "required": ["pid"]}},
+    {"name": "list_sessions", "description": "List terminal sessions", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "execute_command", "description": "Execute shell command", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+    {"name": "get_config", "description": "Get axis configuration", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "set_config_value", "description": "Set config value", "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}, "value": {}}, "required": ["key", "value"]}},
+    {"name": "chat", "description": "Chat with AI via amallo-brain", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "model": {"type": "string"}}, "required": ["message"]}},
+    {"name": "operate", "description": "Operate the browser (Kernel Mustard)", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+]
+
+def mcp_tool_call(name, args):
+    """Dispatch an MCP tool call to the appropriate axis function."""
+    dummy_session = {}
+    tool_map = {
+        'read_file':           lambda a: cmd_cat(f"{a['path']}" + (f" --offset {a['offset']}" if 'offset' in a else '') + (f" --lines {a['length']}" if 'length' in a else ''), dummy_session),
+        'write_file':          lambda a: cmd_write(f"{a['path']} {a['content']}", dummy_session),
+        'list_directory':      lambda a: cmd_ls(f"{a['path']}" + (f" --depth {a['depth']}" if 'depth' in a else ''), dummy_session),
+        'create_directory':    lambda a: cmd_mkdir(a['path'], dummy_session),
+        'move_file':           lambda a: cmd_mv(f"{a['source']} {a['destination']}", dummy_session),
+        'get_file_info':       lambda a: cmd_stat(a['path'], dummy_session),
+        'start_search':        lambda a: cmd_find(f"{a['pattern']} {a.get('path','.')}", dummy_session) if a.get('type') != 'content' else cmd_grep(f"{a['pattern']} {a.get('path','.')}", dummy_session),
+        'list_processes':      lambda a: cmd_ps(a.get('filter',''), dummy_session),
+        'kill_process':        lambda a: cmd_kill(str(a['pid']), dummy_session),
+        'start_process':       lambda a: cmd_proc(a['command'], dummy_session),
+        'interact_with_process': lambda a: cmd_send(f"{a['pid']} {a['input']}", dummy_session),
+        'read_process_output': lambda a: cmd_output(a['pid'], dummy_session),
+        'list_sessions':       lambda a: cmd_sessions('', dummy_session),
+        'execute_command':     lambda a: cmd_run(a['command'], dummy_session),
+        'get_config':          lambda a: cmd_config('', dummy_session),
+        'set_config_value':    lambda a: cmd_config(f"{a['key']} {json.dumps(a['value'])}", dummy_session),
+        'chat':                lambda a: ask_ai([{'role': 'user', 'content': a['message']}], model=a.get('model', MODEL)),
+        'operate':             lambda a: urllib.request.urlopen(
+            urllib.request.Request(
+                'http://localhost:8600/api/command',
+                data=json.dumps({'cmd': a['command']}).encode(),
+                headers={'Content-Type': 'application/json'}
+            )
+        ).read().decode(),
+    }
+    fn = tool_map.get(name)
+    if not fn: return f'Unknown tool: {name}'
+    try:
+        return fn(args)
+    except Exception as e:
+        return f'Error: {e}'
+
+def mcp_server():
+    """
+    Run axis as an MCP (Model Context Protocol) JSON-RPC 2.0 server over stdio.
+    Compatible with Claude Desktop, Cursor, Zed, and any MCP client.
+
+    Add to Claude Desktop config (~/.config/claude/claude_desktop_config.json):
+    {
+      "mcpServers": {
+        "axis": {
+          "command": "axis",
+          "args": ["--mcp"]
+        }
+      }
+    }
+    """
+    def send(obj):
+        sys.stdout.write(json.dumps(obj) + '\n')
+        sys.stdout.flush()
+
+    while True:
+        try:
+            line = sys.stdin.readline()
+            if not line: break
+            req = json.loads(line.strip())
+        except (json.JSONDecodeError, EOFError):
+            continue
+
+        method  = req.get('method', '')
+        req_id  = req.get('id')
+        params  = req.get('params', {})
+
+        if method == 'initialize':
+            send({"jsonrpc": "2.0", "id": req_id, "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {
+                    "name": "axis",
+                    "version": "2.0",
+                    "description": "Sovereign AI CLI — un-ownable, self-hosted, zero cloud"
+                }
+            }})
+
+        elif method == 'tools/list':
+            send({"jsonrpc": "2.0", "id": req_id, "result": {"tools": MCP_TOOLS}})
+
+        elif method == 'tools/call':
+            tool_name = params.get('name', '')
+            tool_args = params.get('arguments', {})
+            result    = mcp_tool_call(tool_name, tool_args)
+            send({"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": str(result)}],
+                "isError": False
+            }})
+
+        elif method == 'notifications/initialized':
+            pass  # no response needed
+
+        else:
+            if req_id is not None:
+                send({"jsonrpc": "2.0", "id": req_id, "error": {
+                    "code": -32601, "message": f"Method not found: {method}"
+                }})
+
 # ── INTERACTIVE CHAT ──────────────────────────────────────────────────────────
 def repl(session):
     """Interactive chat mode."""
@@ -546,6 +925,10 @@ def main():
     # Parse --flags
     if args[0] in ('--help', '-h'):
         print(__doc__)
+        return
+
+    if args[0] == '--mcp':
+        mcp_server()
         return
 
     if args[0] in ('--version', '-v'):

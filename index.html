@@ -125,6 +125,24 @@ footer{color:#333;font-size:.73rem;text-align:center;padding-top:2rem;border-top
         <b>/addcmd</b> — describe what it does, name auto-generated.
       </div>
     </div>
+    <div class="card" style="border: 2px solid #FFD60A;">
+  <div class="card-title">🔌 axis --mcp</div>
+  <div class="card-desc">axis IS your MCP server. Drop-in replacement for Desktop Commander — no Docker, no 300MB image, no cloud. Run it once, connect any MCP client forever.</div>
+  <div class="install-box">
+    <code>axis --mcp</code>
+    <button onclick="copy(this)" data-copy="axis --mcp">copy</button>
+  </div>
+  <ul>
+    <li>18 tools: read_file, write_file, list_directory, execute_command, chat, operate...</li>
+    <li>Claude Desktop → Settings → Developer → add axis as MCP server</li>
+    <li>Works with Cursor, Zed, any MCP-compatible client</li>
+    <li>Zero Docker. Zero cloud. Runs on YOUR node.</li>
+  </ul>
+  <div class="install-box" style="margin-top:8px">
+    <code>{"mcpServers":{"axis":{"command":"axis","args":["--mcp"]}}}</code>
+    <button onclick="copy(this)" data-copy='{"mcpServers":{"axis":{"command":"axis","args":["--mcp"]}}}'>copy</button>
+  </div>
+</div>
     <div class="card">
       <div class="cn">terminal.html <span class="badge bnew">NEW</span></div>
       <div class="cc">axismundi.fun/terminal.html</div>

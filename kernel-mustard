@@ -1,0 +1,906 @@
+#!/usr/bin/env python3
+"""
+ ██╗  ██╗███████╗██████╗ ███╗   ██╗███████╗██╗         
+ ██║ ██╔╝██╔════╝██╔══██╗████╗  ██║██╔════╝██║         
+ █████╔╝ █████╗  ██████╔╝██╔██╗ ██║█████╗  ██║         
+ ██╔═██╗ ██╔══╝  ██╔══██╗██║╚██╗██║██╔══╝  ██║         
+ ██║  ██╗███████╗██║  ██║██║ ╚████║███████╗███████╗    
+ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝    
+  ███╗   ███╗██╗   ██╗███████╗████████╗ █████╗ ██████╗ ██████╗
+  ████╗ ████║██║   ██║██╔════╝╚══██╔══╝██╔══██╗██╔══██╗██╔══██╗
+  ██╔████╔██║██║   ██║███████╗   ██║   ███████║██████╔╝██║  ██║
+  ██║╚██╔╝██║██║   ██║╚════██║   ██║   ██╔══██║██╔══██╗██║  ██║
+  ██║ ╚═╝ ██║╚██████╔╝███████║   ██║   ██║  ██║██║  ██║██████╔╝
+  ╚═╝     ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ 
+
+Kernel Mustard — Sovereign Agentic Computer Operator
+Open source. Un-ownable. Runs on YOUR node.
+The Claude Computer Use you actually own.
+
+SETUP:
+  pip install playwright aiohttp pillow
+  playwright install chromium
+  export AMALLO_URL=http://localhost:8100  (or your node)
+  python3 kernel-mustard [--port 8600] [--headless]
+
+USAGE:
+  # Start server + open browser
+  kernel-mustard
+
+  # One-shot command (no server)
+  kernel-mustard --cmd "open github.com and star the sovereign-stack repo"
+
+  # Via axis CLI
+  /operate "open gmail and draft email to team about the new build"
+"""
+
+import asyncio
+import base64
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+import aiohttp
+from aiohttp import web
+
+# ─────────────────────────────────────────────
+# Environment config
+# ─────────────────────────────────────────────
+AMALLO_URL = os.environ.get("AMALLO_URL", "http://localhost:8100")
+AMALLO_VISION_MODEL = os.environ.get("AMALLO_VISION_MODEL", None)
+KM_PORT = int(os.environ.get("KM_PORT", "8600"))
+KM_HEADLESS = os.environ.get("KM_HEADLESS", "false").lower() in ("1", "true", "yes")
+
+MACRO_DIR = Path.home() / "mesh-drive" / "macros"
+
+# ─────────────────────────────────────────────
+# Operator system prompt
+# ─────────────────────────────────────────────
+OPERATOR_SYSTEM_PROMPT = """You are Kernel Mustard, a sovereign agentic computer operator.
+You control a web browser to complete tasks for the user.
+You see screenshots of the current browser state.
+
+Respond with ONLY a JSON object — no markdown, no explanation, just JSON.
+
+Available actions:
+{"type": "navigate", "url": "https://..."}
+{"type": "click", "x": 123, "y": 456}
+{"type": "click_text", "text": "exact button text"}
+{"type": "type", "text": "text to type"}
+{"type": "key", "key": "Enter"}
+{"type": "scroll", "x": 0, "y": 500}
+{"type": "wait", "ms": 1000}
+{"type": "done", "result": "description of what was accomplished"}
+{"type": "fail", "reason": "why the task cannot be completed"}
+
+Rules:
+- Always navigate first if no page is loaded
+- Prefer click_text over coordinate clicks when possible
+- Use "done" immediately when the task is complete
+- Use "fail" if you see a clear blocker (login required, page not found, etc.)
+- Be efficient — minimum steps to accomplish the task"""
+
+
+# ─────────────────────────────────────────────
+# Browser Controller
+# ─────────────────────────────────────────────
+class BrowserController:
+    def __init__(self, headless: bool = False):
+        self.headless = headless
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+
+    async def start(self):
+        from playwright.async_api import async_playwright
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+        )
+        self.context = await self.browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        self.page = await self.context.new_page()
+        await self.page.goto("about:blank")
+
+    async def stop(self):
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+
+    async def screenshot(self) -> bytes:
+        """Full-page screenshot as JPEG bytes, quality=80."""
+        raw = await self.page.screenshot(type="jpeg", quality=80, full_page=False)
+        return raw
+
+    async def current_url(self) -> str:
+        return self.page.url
+
+    async def execute_action(self, action: dict):
+        t = action.get("type")
+
+        if t == "navigate":
+            url = action["url"]
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
+
+        elif t == "click":
+            await self.page.mouse.click(float(action["x"]), float(action["y"]))
+
+        elif t == "click_text":
+            text = action["text"]
+            # Try exact text match on common interactive elements first
+            for selector in [
+                f'button:has-text("{text}")',
+                f'a:has-text("{text}")',
+                f'[role="button"]:has-text("{text}")',
+                f'input[value="{text}"]',
+                f':has-text("{text}")',
+            ]:
+                try:
+                    locator = self.page.locator(selector).first
+                    if await locator.count() > 0:
+                        await locator.click(timeout=5000)
+                        return
+                except Exception:
+                    continue
+            # Fallback: evaluate JS to find and click by innerText
+            await self.page.evaluate(
+                """(text) => {
+                    const all = document.querySelectorAll('a,button,input,[role="button"]');
+                    for (const el of all) {
+                        if ((el.innerText || el.value || '').trim().includes(text)) {
+                            el.click(); return true;
+                        }
+                    }
+                    return false;
+                }""",
+                text,
+            )
+
+        elif t == "type":
+            await self.page.keyboard.type(action["text"])
+
+        elif t == "key":
+            await self.page.keyboard.press(action["key"])
+
+        elif t == "scroll":
+            await self.page.mouse.wheel(float(action.get("x", 0)), float(action.get("y", 0)))
+
+        elif t == "wait":
+            await asyncio.sleep(action.get("ms", 1000) / 1000.0)
+
+        elif t in ("done", "fail"):
+            # Terminal actions — handled by caller
+            pass
+
+        else:
+            raise ValueError(f"Unknown action type: {t}")
+
+
+# ─────────────────────────────────────────────
+# Text-only page context (vision fallback)
+# ─────────────────────────────────────────────
+async def get_page_context(browser: BrowserController) -> str:
+    """Extract text context from page for non-vision models."""
+    try:
+        ctx = await browser.page.evaluate("""() => {
+            const title = document.title;
+            const url = window.location.href;
+            const bodyText = (document.body ? document.body.innerText : '').slice(0, 2000);
+            const clickables = [];
+            const els = document.querySelectorAll('a,button,input,select,textarea,[role="button"]');
+            let i = 0;
+            for (const el of els) {
+                if (i++ > 60) break;
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 && rect.height === 0) continue;
+                const label = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.name || '').trim().slice(0, 60);
+                if (label) {
+                    clickables.push(`  [${el.tagName.toLowerCase()}] "${label}" @(${Math.round(rect.x+rect.width/2)},${Math.round(rect.y+rect.height/2)})`);
+                }
+            }
+            return {title, url, bodyText, clickables};
+        }""")
+        lines = [
+            f"PAGE TITLE: {ctx['title']}",
+            f"URL: {ctx['url']}",
+            "CLICKABLE ELEMENTS:",
+            *ctx["clickables"],
+            "VISIBLE TEXT (truncated):",
+            ctx["bodyText"],
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"(could not extract page context: {e})"
+
+
+# ─────────────────────────────────────────────
+# amallo-brain client
+# ─────────────────────────────────────────────
+async def call_brain(messages: list, vision: bool = False) -> str:
+    """POST to amallo-brain /chat and return the assistant reply text."""
+    payload = {
+        "messages": messages,
+        "stream": False,
+    }
+    if vision and AMALLO_VISION_MODEL:
+        payload["model"] = AMALLO_VISION_MODEL
+
+    url = f"{AMALLO_URL}/chat"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                # Support common response shapes
+                if isinstance(data, dict):
+                    if "choices" in data:
+                        return data["choices"][0]["message"]["content"]
+                    if "response" in data:
+                        return data["response"]
+                    if "content" in data:
+                        return data["content"]
+                    if "message" in data:
+                        msg = data["message"]
+                        if isinstance(msg, dict):
+                            return msg.get("content", str(msg))
+                        return str(msg)
+                return str(data)
+    except Exception as e:
+        return json.dumps({"type": "fail", "reason": f"Brain unreachable: {e}"})
+
+
+# ─────────────────────────────────────────────
+# Action parser
+# ─────────────────────────────────────────────
+def parse_action(reply: str) -> dict:
+    """Extract a JSON action dict from the model reply."""
+    # Strip markdown fences if present
+    text = re.sub(r"```(?:json)?", "", reply).strip().strip("`").strip()
+    # Find first {...}
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+    return {"type": "fail", "reason": f"Could not parse action from reply: {reply[:200]}"}
+
+
+# ─────────────────────────────────────────────
+# Main operate loop
+# ─────────────────────────────────────────────
+async def operate(cmd: str, browser: BrowserController, max_steps: int = 20):
+    """
+    Main agent loop. Yields action log entry strings for streaming.
+    """
+    history = []
+    use_vision = AMALLO_VISION_MODEL is not None
+
+    for step in range(max_steps):
+        # ── Capture current state ──
+        if use_vision:
+            shot = await browser.screenshot()
+            shot_b64 = base64.b64encode(shot).decode()
+            user_content = [
+                {
+                    "type": "text",
+                    "text": (
+                        f"TASK: {cmd}\n"
+                        f"STEP: {step + 1}/{max_steps}\n"
+                        "What action should I take next? Reply with ONLY valid JSON."
+                    ),
+                },
+                {"type": "image_url", "url": f"data:image/jpeg;base64,{shot_b64}"},
+            ]
+        else:
+            page_ctx = await get_page_context(browser)
+            user_content = (
+                f"TASK: {cmd}\n"
+                f"STEP: {step + 1}/{max_steps}\n"
+                f"CURRENT BROWSER STATE:\n{page_ctx}\n\n"
+                "What action should I take next? Reply with ONLY valid JSON."
+            )
+
+        # ── Build message history ──
+        messages = [{"role": "system", "content": OPERATOR_SYSTEM_PROMPT}]
+        for h in history[-3:]:
+            messages.append({"role": "assistant", "content": f"I did: {json.dumps(h['action'])}"})
+            if h.get("result"):
+                messages.append({"role": "user", "content": f"Result: {h['result']}"})
+        messages.append({"role": "user", "content": user_content})
+
+        # ── Call brain ──
+        reply = await call_brain(messages, vision=use_vision)
+        action = parse_action(reply)
+
+        log_msg = f"[{step + 1}] {action['type']}: {json.dumps(action)}"
+        yield log_msg
+
+        if action["type"] in ("done", "fail"):
+            outcome = action.get("result") or action.get("reason", "")
+            yield f"RESULT: {outcome}"
+            return
+
+        # ── Execute ──
+        result_note = ""
+        try:
+            await browser.execute_action(action)
+            result_note = "ok"
+        except Exception as exc:
+            result_note = f"error: {exc}"
+            yield f"  ⚠ action error: {exc}"
+
+        history.append({"action": action, "step": step, "result": result_note})
+        await asyncio.sleep(0.5)
+
+    yield f"RESULT: Reached max steps ({max_steps}) without completing task."
+
+
+# ─────────────────────────────────────────────
+# Macro recording / replay
+# ─────────────────────────────────────────────
+async def record_macro(name: str, actions: list):
+    MACRO_DIR.mkdir(parents=True, exist_ok=True)
+    path = MACRO_DIR / f"{name}.json"
+    path.write_text(
+        json.dumps(
+            {"name": name, "actions": actions, "recorded": time.time()},
+            indent=2,
+        )
+    )
+
+
+async def replay_macro(name: str, browser: BrowserController):
+    path = MACRO_DIR / f"{name}.json"
+    if not path.exists():
+        yield f"ERROR: macro '{name}' not found at {path}"
+        return
+    macro = json.loads(path.read_text())
+    for action in macro["actions"]:
+        yield f"replaying: {action['type']}"
+        try:
+            await browser.execute_action(action)
+        except Exception as e:
+            yield f"  ⚠ {e}"
+        await asyncio.sleep(0.3)
+    yield "RESULT: macro complete"
+
+
+def list_macros() -> list:
+    if not MACRO_DIR.exists():
+        return []
+    result = []
+    for p in sorted(MACRO_DIR.glob("*.json")):
+        try:
+            data = json.loads(p.read_text())
+            result.append(
+                {
+                    "name": data.get("name", p.stem),
+                    "recorded": data.get("recorded", 0),
+                    "action_count": len(data.get("actions", [])),
+                }
+            )
+        except Exception:
+            pass
+    return result
+
+
+# ─────────────────────────────────────────────
+# Operator HTML UI
+# ─────────────────────────────────────────────
+OPERATOR_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kernel Mustard — Sovereign Computer Operator</title>
+<style>
+  :root { --bg: #0e0e0e; --surface: #1a1a1a; --border: #2e2e2e; --accent: #f5c518; --text: #e0e0e0; --muted: #666; --green: #4caf50; --red: #f44336; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; height: 100vh; display: flex; flex-direction: column; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; gap: 16px; }
+  header .logo { color: var(--accent); font-size: 18px; font-weight: bold; letter-spacing: 1px; }
+  header .tagline { color: var(--muted); font-size: 11px; }
+  header .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-left: auto; }
+  header .status-dot.alive { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 0; overflow: hidden; }
+  .viewport { background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+  .viewport img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: crosshair; }
+  .viewport .placeholder { color: var(--muted); text-align: center; }
+  .viewport .placeholder .icon { font-size: 48px; margin-bottom: 12px; }
+  .sidebar { background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .cmd-bar { padding: 12px; border-bottom: 1px solid var(--border); }
+  .cmd-bar textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 8px; font-family: inherit; font-size: 12px; resize: vertical; min-height: 60px; }
+  .cmd-bar textarea:focus { outline: none; border-color: var(--accent); }
+  .cmd-bar .row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  .cmd-bar input.macro-name { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 6px 8px; font-family: inherit; font-size: 11px; }
+  .cmd-bar input.macro-name::placeholder { color: var(--muted); }
+  button { background: var(--accent); color: #000; border: none; border-radius: 4px; padding: 7px 16px; font-family: inherit; font-size: 12px; font-weight: bold; cursor: pointer; transition: opacity .15s; }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: var(--border); color: var(--text); }
+  button.danger { background: var(--red); color: #fff; }
+  .log-panel { flex: 1; overflow-y: auto; padding: 10px; font-size: 11px; line-height: 1.6; }
+  .log-panel .entry { padding: 2px 0; border-bottom: 1px solid #1f1f1f; word-break: break-all; }
+  .log-panel .entry.result { color: var(--accent); font-weight: bold; }
+  .log-panel .entry.warn { color: #ff9800; }
+  .log-panel .entry.error { color: var(--red); }
+  .log-panel .entry.info { color: #29b6f6; }
+  .macros-panel { border-top: 1px solid var(--border); padding: 10px; max-height: 180px; overflow-y: auto; }
+  .macros-panel h3 { font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px; }
+  .macro-item { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1f1f1f; }
+  .macro-item .mname { color: var(--accent); }
+  .macro-item .minfo { color: var(--muted); font-size: 10px; }
+  footer { background: var(--surface); border-top: 1px solid var(--border); padding: 6px 20px; display: flex; align-items: center; gap: 16px; font-size: 10px; color: var(--muted); }
+  footer span { display: flex; align-items: center; gap: 4px; }
+  #screenshotRefreshBtn { position: absolute; bottom: 10px; right: 10px; opacity: 0.6; font-size: 11px; padding: 4px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">🟡 KERNEL MUSTARD</div>
+  <div class="tagline">Sovereign Agentic Computer Operator · Runs on YOUR node</div>
+  <div class="status-dot" id="statusDot"></div>
+</header>
+<main>
+  <div class="viewport" id="viewport">
+    <div class="placeholder" id="placeholder">
+      <div class="icon">🖥️</div>
+      <div>Browser viewport</div>
+      <div style="color:#444;margin-top:4px;font-size:11px">Issue a command to begin</div>
+    </div>
+    <img id="screenshotImg" style="display:none" alt="browser viewport">
+    <button class="secondary" id="screenshotRefreshBtn" onclick="refreshScreenshot()" style="display:none">⟳ Refresh</button>
+  </div>
+  <div class="sidebar">
+    <div class="cmd-bar">
+      <textarea id="cmdInput" placeholder="What should Kernel Mustard do?&#10;e.g. 'open github.com and search for playwright'"></textarea>
+      <div class="row">
+        <input class="macro-name" id="macroName" placeholder="record as macro (optional)">
+        <button id="runBtn" onclick="runCommand()">▶ Run</button>
+        <button class="secondary" onclick="stopCommand()" id="stopBtn" disabled>■ Stop</button>
+      </div>
+    </div>
+    <div class="log-panel" id="logPanel">
+      <div class="entry info">Kernel Mustard ready. Enter a command above.</div>
+    </div>
+    <div class="macros-panel" id="macrosPanel">
+      <h3>📼 Saved Macros</h3>
+      <div id="macrosList"><span style="color:#444">None yet</span></div>
+    </div>
+  </div>
+</main>
+<footer>
+  <span>🟡 Kernel Mustard</span>
+  <span id="footerStatus">idle</span>
+  <span id="footerUrl" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+  <span id="footerUptime"></span>
+</footer>
+
+<script>
+let evtSource = null;
+let running = false;
+let screenshotInterval = null;
+let startTime = Date.now();
+
+function log(msg, cls='') {
+  const panel = document.getElementById('logPanel');
+  const d = document.createElement('div');
+  d.className = 'entry ' + cls;
+  const ts = new Date().toLocaleTimeString();
+  d.textContent = `[${ts}] ${msg}`;
+  panel.appendChild(d);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function clearLog() {
+  document.getElementById('logPanel').innerHTML = '';
+}
+
+async function refreshScreenshot() {
+  try {
+    const r = await fetch('/api/screenshot');
+    if (!r.ok) return;
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const img = document.getElementById('screenshotImg');
+    img.src = url;
+    img.style.display = '';
+    document.getElementById('placeholder').style.display = 'none';
+    document.getElementById('screenshotRefreshBtn').style.display = '';
+  } catch(e) {}
+}
+
+function startScreenshotPolling() {
+  refreshScreenshot();
+  screenshotInterval = setInterval(refreshScreenshot, 2000);
+}
+function stopScreenshotPolling() {
+  if (screenshotInterval) { clearInterval(screenshotInterval); screenshotInterval = null; }
+}
+
+function setRunning(v) {
+  running = v;
+  document.getElementById('runBtn').disabled = v;
+  document.getElementById('stopBtn').disabled = !v;
+  document.getElementById('statusDot').className = 'status-dot' + (v ? ' alive' : '');
+  document.getElementById('footerStatus').textContent = v ? 'running...' : 'idle';
+}
+
+async function runCommand() {
+  const cmd = document.getElementById('cmdInput').value.trim();
+  if (!cmd) return;
+  const macroName = document.getElementById('macroName').value.trim();
+  clearLog();
+  log(`▶ ${cmd}`, 'info');
+  setRunning(true);
+  startScreenshotPolling();
+
+  const body = {cmd};
+  if (macroName) body.record_as = macroName;
+
+  try {
+    const resp = await fetch('/api/command', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (line.startsWith('data:')) {
+          try {
+            const obj = JSON.parse(line.slice(5).trim());
+            const msg = obj.msg || '';
+            let cls = '';
+            if (msg.startsWith('RESULT:')) cls = 'result';
+            else if (msg.includes('⚠')) cls = 'warn';
+            else if (msg.startsWith('ERROR')) cls = 'error';
+            log(msg, cls);
+          } catch(e) {}
+        }
+      }
+    }
+  } catch(e) {
+    log(`Connection error: ${e}`, 'error');
+  }
+
+  setRunning(false);
+  stopScreenshotPolling();
+  refreshScreenshot();
+  loadMacros();
+}
+
+function stopCommand() {
+  if (evtSource) { evtSource.close(); evtSource = null; }
+  setRunning(false);
+  stopScreenshotPolling();
+  log('■ Stopped by user.', 'warn');
+}
+
+async function loadMacros() {
+  try {
+    const r = await fetch('/api/macros');
+    const macros = await r.json();
+    const el = document.getElementById('macrosList');
+    if (!macros.length) { el.innerHTML = '<span style="color:#444">None yet</span>'; return; }
+    el.innerHTML = macros.map(m => `
+      <div class="macro-item">
+        <span>
+          <span class="mname">${m.name}</span>
+          <span class="minfo"> · ${m.action_count} steps</span>
+        </span>
+        <button class="secondary" onclick="runMacro('${m.name}')" style="padding:3px 8px;font-size:10px">▶</button>
+      </div>`).join('');
+  } catch(e) {}
+}
+
+async function runMacro(name) {
+  clearLog();
+  log(`▶ macro: ${name}`, 'info');
+  setRunning(true);
+  startScreenshotPolling();
+  try {
+    const resp = await fetch(`/api/macro/run/${name}`, {method:'POST'});
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream:true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (line.startsWith('data:')) {
+          try {
+            const obj = JSON.parse(line.slice(5).trim());
+            log(obj.msg || '', obj.msg?.startsWith('RESULT') ? 'result' : '');
+          } catch(e) {}
+        }
+      }
+    }
+  } catch(e) { log(`Error: ${e}`, 'error'); }
+  setRunning(false);
+  stopScreenshotPolling();
+  refreshScreenshot();
+}
+
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    document.getElementById('footerUrl').textContent = s.browser_url || '';
+    const up = Math.floor(s.uptime);
+    const h = Math.floor(up/3600), m = Math.floor((up%3600)/60), sec = up%60;
+    document.getElementById('footerUptime').textContent = `up ${h?h+'h ':''}${m}m ${sec}s`;
+  } catch(e) {}
+}
+
+// Init
+loadMacros();
+setInterval(pollStatus, 5000);
+pollStatus();
+
+document.getElementById('cmdInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { runCommand(); }
+});
+</script>
+</body>
+</html>
+"""
+
+
+# ─────────────────────────────────────────────
+# aiohttp server
+# ─────────────────────────────────────────────
+class KernelMustardServer:
+    def __init__(self, port: int, headless: bool):
+        self.port = port
+        self.headless = headless
+        self.browser: BrowserController | None = None
+        self.running = False
+        self.current_cmd: str = ""
+        self.steps_taken = 0
+        self.start_time = time.time()
+        self._operate_task: asyncio.Task | None = None
+
+    async def setup(self):
+        self.browser = BrowserController(headless=self.headless)
+        await self.browser.start()
+
+    async def teardown(self):
+        if self.browser:
+            await self.browser.stop()
+
+    # ── SSE helper ──────────────────────────────
+    @staticmethod
+    def sse_response():
+        resp = web.StreamResponse(
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            }
+        )
+        return resp
+
+    @staticmethod
+    async def sse_send(resp: web.StreamResponse, step: int, msg: str):
+        payload = json.dumps({"ts": time.time(), "step": step, "msg": msg})
+        await resp.write(f"data: {payload}\n\n".encode())
+
+    # ── Routes ──────────────────────────────────
+    async def handle_root(self, request):
+        raise web.HTTPFound("/operator.html")
+
+    async def handle_operator_html(self, request):
+        return web.Response(text=OPERATOR_HTML, content_type="text/html")
+
+    async def handle_screenshot(self, request):
+        if not self.browser:
+            return web.Response(status=503, text="Browser not ready")
+        try:
+            data = await self.browser.screenshot()
+            return web.Response(body=data, content_type="image/jpeg")
+        except Exception as e:
+            return web.Response(status=500, text=str(e))
+
+    async def handle_command(self, request):
+        body = await request.json()
+        cmd = body.get("cmd", "").strip()
+        record_as = body.get("record_as", "").strip() or None
+        if not cmd:
+            return web.Response(status=400, text="cmd required")
+
+        resp = self.sse_response()
+        await resp.prepare(request)
+
+        self.running = True
+        self.current_cmd = cmd
+        self.steps_taken = 0
+        recorded_actions: list = []
+
+        step_counter = 0
+        try:
+            async for msg in operate(cmd, self.browser):
+                step_counter += 1
+                self.steps_taken = step_counter
+                await self.sse_send(resp, step_counter, msg)
+                # Collect actions for macro recording
+                if record_as and msg.startswith("[") and "navigate" in msg or (
+                    record_as and not msg.startswith("RESULT")
+                ):
+                    try:
+                        json_start = msg.index("{")
+                        recorded_actions.append(json.loads(msg[json_start:]))
+                    except (ValueError, json.JSONDecodeError):
+                        pass
+        except Exception as e:
+            await self.sse_send(resp, step_counter, f"ERROR: {e}")
+        finally:
+            self.running = False
+            self.current_cmd = ""
+
+        if record_as and recorded_actions:
+            await record_macro(record_as, recorded_actions)
+            await self.sse_send(resp, step_counter, f"📼 Saved macro: {record_as} ({len(recorded_actions)} actions)")
+
+        await resp.write_eof()
+        return resp
+
+    async def handle_stream(self, request):
+        resp = self.sse_response()
+        await resp.prepare(request)
+        await self.sse_send(resp, 0, f"status: {'running' if self.running else 'idle'}")
+        await resp.write_eof()
+        return resp
+
+    async def handle_macros(self, request):
+        return web.json_response(list_macros())
+
+    async def handle_macro_run(self, request):
+        name = request.match_info["name"]
+        resp = self.sse_response()
+        await resp.prepare(request)
+        step = 0
+        async for msg in replay_macro(name, self.browser):
+            step += 1
+            await self.sse_send(resp, step, msg)
+        await resp.write_eof()
+        return resp
+
+    async def handle_status(self, request):
+        url = ""
+        try:
+            if self.browser and self.browser.page:
+                url = self.browser.page.url
+        except Exception:
+            pass
+        return web.json_response(
+            {
+                "running": self.running,
+                "current_cmd": self.current_cmd,
+                "steps_taken": self.steps_taken,
+                "uptime": time.time() - self.start_time,
+                "browser_url": url,
+            }
+        )
+
+    def build_app(self):
+        app = web.Application()
+        app.router.add_get("/", self.handle_root)
+        app.router.add_get("/operator.html", self.handle_operator_html)
+        app.router.add_get("/api/screenshot", self.handle_screenshot)
+        app.router.add_post("/api/command", self.handle_command)
+        app.router.add_get("/api/stream", self.handle_stream)
+        app.router.add_get("/api/macros", self.handle_macros)
+        app.router.add_post("/api/macro/run/{name}", self.handle_macro_run)
+        app.router.add_get("/api/status", self.handle_status)
+        return app
+
+
+# ─────────────────────────────────────────────
+# One-shot modes
+# ─────────────────────────────────────────────
+async def one_shot(cmd: str, headless: bool):
+    browser = BrowserController(headless=headless)
+    await browser.start()
+    try:
+        async for msg in operate(cmd, browser):
+            print(msg, flush=True)
+    finally:
+        await browser.stop()
+
+
+async def one_shot_macro(name: str, headless: bool):
+    browser = BrowserController(headless=headless)
+    await browser.start()
+    try:
+        async for msg in replay_macro(name, browser):
+            print(msg, flush=True)
+    finally:
+        await browser.stop()
+
+
+async def start_server(port: int, headless: bool):
+    server = KernelMustardServer(port, headless)
+    await server.setup()
+    app = server.build_app()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    print(f"   Brain:    {AMALLO_URL}")
+    print(f"   Vision:   {AMALLO_VISION_MODEL or 'text-only mode'}")
+    print(f"   Headless: {headless}")
+    print(f"   Macros:   {MACRO_DIR}")
+    print()
+
+    # Keep running
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        print("\n🟡 Kernel Mustard shutting down...")
+    finally:
+        await server.teardown()
+        await runner.cleanup()
+
+
+# ─────────────────────────────────────────────
+# Entrypoint
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Kernel Mustard - Sovereign Agentic Computer Operator",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  kernel-mustard                                          # start control panel
+  kernel-mustard --headless                               # headless server
+  kernel-mustard --cmd "open github.com"                 # one-shot
+  kernel-mustard --macro my-workflow                     # replay macro
+  kernel-mustard --port 9000 --headless                  # custom port
+        """,
+    )
+    parser.add_argument("--port", type=int, default=KM_PORT, help="Server port (default: 8600)")
+    parser.add_argument("--headless", action="store_true", default=KM_HEADLESS, help="Run browser headless")
+    parser.add_argument("--cmd", type=str, help="One-shot command (no server)")
+    parser.add_argument("--macro", type=str, help="Replay a saved macro by name")
+    args = parser.parse_args()
+
+    if args.cmd:
+        print(f"🟡 Kernel Mustard — one-shot: {args.cmd}")
+        asyncio.run(one_shot(args.cmd, args.headless))
+    elif args.macro:
+        print(f"🟡 Kernel Mustard — replaying macro: {args.macro}")
+        asyncio.run(one_shot_macro(args.macro, args.headless))
+    else:
+        print("🟡 Kernel Mustard starting...")
+        print(f"   Control panel: http://localhost:{args.port}/operator.html")
+        asyncio.run(start_server(args.port, args.headless))

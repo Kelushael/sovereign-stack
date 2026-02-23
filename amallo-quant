@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""
+amallo-quant — Sovereign GGUF Quantizer
+Built from: Georgi Gerganov's llama.cpp + imatrix calibration
+
+THREE GENERATIONS (from transcript):
+  Legacy  Q4_0 Q4_1 Q8_0     basic linear quant, deprecated standalone
+  K-quant Q4_K_M Q5_K_M      super-blocks, 2-level quant, sweet spot
+  I-quant IQ2_XXS IQ3_XS     vector quantization, best compression/quality
+
+IMATRIX = the secret weapon
+  Run calibration data through full-precision model
+  Score each weight by how much it affects output
+  Decouples quant constants from dequant constants (S,Z → S',Z')
+  Minimizes weighted MSE via closed-form quadratic solution
+  This is what bartowski does that most people don't
+
+SIZE MODIFIERS (S/M/L in name):
+  Not all weights hit the same bit width
+  Layer norms kept higher precision always
+  _S = sensitive layers get Q5, _M = Q6, _L = Q8
+"""
+
+import os, sys, json, subprocess, shutil, urllib.request
+from pathlib import Path
+
+# ── QUANT KNOWLEDGE BASE ──────────────────────────────────────
+QUANTS = {
+    # name: (bits, generation, quality, notes)
+    "Q2_K":     (2.5, "k", 2, "extreme compression, noticeable degradation"),
+    "IQ2_XXS":  (2.1, "i", 3, "vector quant, better than Q2_K at same size"),
+    "IQ2_XS":   (2.3, "i", 3, "vector quant"),
+    "IQ3_XXS":  (3.1, "i", 5, "vector quant, good compression"),
+    "IQ3_XS":   (3.3, "i", 5, "vector quant"),
+    "Q3_K_M":   (3.3, "k", 4, "k-quant superblock, tight RAM"),
+    "Q3_K_L":   (3.4, "k", 5, "k-quant, sensitive layers at Q8"),
+    "IQ4_NL":   (4.0, "i", 7, "non-linear vector quant"),
+    "IQ4_XS":   (4.3, "i", 7, "vector quant sweet spot"),
+    "Q4_K_S":   (4.4, "k", 7, "k-quant, sensitive layers at Q5"),
+    "Q4_K_M":   (4.5, "k", 8, "★ DAILY DRIVER — best size/quality ratio"),
+    "Q5_K_S":   (5.4, "k", 8, "k-quant, sensitive at Q5"),
+    "Q5_K_M":   (5.5, "k", 9, "★ RECOMMENDED — extra RAM worth it"),
+    "Q6_K":     (6.6, "k", 9, "near-lossless, layer norms full precision"),
+    "Q8_0":     (8.0, "legacy", 10, "lossless-ish, archival quality"),
+}
+
+# RAM for N billion params at given quant
+def vram(params_b, quant):
+    bits = QUANTS[quant][0]
+    return round((params_b * 1e9 * bits) / (8 * 1e9) + 0.5, 1)
+
+RECOMMENDED = [
+    ("meta-llama/Llama-3.2-3B-Instruct",          3,  "Llama 3.2 3B",         "fast, tiny, solid"),
+    ("meta-llama/Llama-3.1-8B-Instruct",          8,  "Llama 3.1 8B",         "best all-rounder 8B"),
+    ("mistralai/Mistral-7B-Instruct-v0.3",        7,  "Mistral 7B",           "OG, still excellent"),
+    ("Qwen/Qwen2.5-7B-Instruct",                  7,  "Qwen 2.5 7B",          "best reasoning at 7B"),
+    ("Qwen/Qwen2.5-Coder-7B-Instruct",            7,  "Qwen 2.5 Coder 7B",    "code specialist"),
+    ("google/gemma-2-9b-it",                      9,  "Gemma 2 9B",           "Google open, very fast"),
+    ("deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", 14,  "DeepSeek R1 14B",      "reasoning beast"),
+    ("Qwen/Qwen2.5-14B-Instruct",                14,  "Qwen 2.5 14B",         "strong mid-size"),
+    ("Qwen/Qwen2.5-Coder-32B-Instruct",          32,  "Qwen 2.5 Coder 32B",   "best open coder"),
+    ("meta-llama/Llama-3.3-70B-Instruct",        70,  "Llama 3.3 70B",        "GPT-4 level — use Q3_K_M"),
+    ("deepseek-ai/DeepSeek-R1",                 671,  "DeepSeek R1 671B",     "700GB→100GB with IQ2_XXS"),
+]
+
+NODE_RAM = 32  # GB
+
+C = {
+    'reset':  '\033[0m',  'bold':   '\033[1m',  'dim':    '\033[2m',
+    'green':  '\033[32m', 'blue':   '\033[34m', 'purple': '\033[35m',
+    'cyan':   '\033[36m', 'orange': '\033[33m', 'red':    '\033[31m',
+}
+def c(k, t): return f"{C[k]}{t}{C['reset']}"
+
+def print_quant_guide():
+    print(f"\n  {c('bold','QUANT GUIDE')} — 3 generations (Gerganov / llama.cpp)\n")
+    print(f"  {'NAME':<12} {'BITS':>5}  {'GEN':<7} {'QUALITY':>8}  NOTES")
+    print("  " + "─"*72)
+    last_gen = None
+    for name, (bits, gen, quality, notes) in QUANTS.items():
+        if gen != last_gen:
+            labels = {'legacy':'Legacy Quants','k':'K-Quants (superblocks)','i':'I-Quants (vector)'}
+            print(f"\n  {c('dim', labels[gen])}")
+            last_gen = gen
+        star = c('orange','★ ') if '★' in notes else '  '
+        bar  = c('green','█'*quality) + c('dim','░'*(10-quality))
+        print(f"  {star}{name:<10} {bits:>5.1f}  {bar}  {notes.replace('★ ','')}")
+    print()
+    print(f"  {c('cyan','imatrix')} = importance matrix calibration")
+    print(f"  {c('dim','  Runs calibration data (WikiText) through full-precision model')}")
+    print(f"  {c('dim','  Scores each weight by output sensitivity')}")
+    print(f"  {c('dim','  Decouples quant/dequant constants → better S prime, Z prime')}")
+    print(f"  {c('dim','  Closed-form quadratic optimization. Free quality boost.')}")
+    print(f"  {c('dim','  Always use it. Takes 20 min. Worth every second.')}\n")
+
+def print_models(max_ram=None):
+    print(f"\n  {'#':<3} {'MODEL':<32} {'Q4_K_M':>7}  {'Q5_K_M':>7}  NOTE")
+    print("  " + "─"*72)
+    for i, (hf, params, label, note) in enumerate(RECOMMENDED, 1):
+        q4 = vram(params, 'Q4_K_M')
+        q5 = vram(params, 'Q5_K_M')
+        fits = q5 <= NODE_RAM
+        sym  = c('green','✓') if fits else c('red','✗')
+        skip = max_ram and q5 > max_ram
+        dim  = c('dim','') if skip else ''
+        print(f"  {sym} {i:<2} {dim}{label:<32}{q4:>6}GB  {q5:>6}GB  {note}{C['reset']}")
+    print()
+
+def interactive():
+    print(f"\n  {c('purple', '╔══════════════════════════════════════════╗')}")
+    print(f"  {c('purple', '║')}  {c('bold','AMALLO QUANTIZER')}  {c('dim','sovereign GGUF forge')}  {c('purple','║')}")
+    print(f"  {c('purple', '╚══════════════════════════════════════════╝')}\n")
+
+    print(f"  {c('dim','Based on: Georgi Gerganov llama.cpp | imatrix calibration')}")
+    print(f"  {c('dim','Node RAM: 32GB  Storage: 400GB')}\n")
+
+    # Step 1: Model
+    print(c('bold','  Step 1: Which model?'))
+    print_models()
+    print(f"  {c('dim','Enter number, or paste HuggingFace ID (e.g. mistralai/Mistral-7B-Instruct-v0.3)')}")
+    choice = input(f"  {c('green','model >')} ").strip()
+
+    if choice.isdigit() and 1 <= int(choice) <= len(RECOMMENDED):
+        hf_id, params, label, _ = RECOMMENDED[int(choice)-1]
+        print(f"\n  {c('green','✓')} {label}  ({hf_id})")
+    else:
+        hf_id = choice
+        params = None
+        label  = hf_id.split('/')[-1]
+        print(f"\n  {c('green','✓')} Custom: {hf_id}")
+
+    # Step 2: Quant
+    print(f"\n{c('bold','  Step 2: Quantization type?')}")
+    print_quant_guide()
+
+    if params:
+        print(f"  RAM on your 32GB node:")
+        for q in ['Q3_K_M','Q4_K_M','Q5_K_M','Q6_K','Q8_0']:
+            gb = vram(params, q)
+            bar_len = min(int(gb), 32)
+            bar = c('green','█'*bar_len) + c('red','█'*max(0,int(gb)-32))
+            fit = c('green','✓ fits') if gb<=28 else c('orange','⚠ tight') if gb<=32 else c('red','✗ too big')
+            print(f"    {q:<10} {gb:>5}GB  {bar:<35} {fit}")
+        print()
+
+    q_input = input(f"  {c('green','quant >')} [Q5_K_M] ").strip() or "Q5_K_M"
+    quants  = [q.strip() for q in q_input.split(',')]
+
+    for q in quants:
+        if q not in QUANTS:
+            print(f"  {c('red','✗')} Unknown: {q}. Valid: {', '.join(QUANTS.keys())}")
+            sys.exit(1)
+
+    # Step 3: imatrix
+    print(f"\n{c('bold','  Step 3: Use imatrix calibration?')}")
+    print(f"  {c('dim','Recommended: YES')}")
+    print(f"  {c('dim','  - Runs WikiText calibration through full-precision model')}")
+    print(f"  {c('dim','  - Scores weight importance (AWQ-style)')}")
+    print(f"  {c('dim','  - Optimizes S-prime Z-prime via quadratic minimization')}")
+    print(f"  {c('dim','  - Costs ~20min extra. Free quality boost. bartowski always does this.')}\n")
+    use_imatrix = input(f"  {c('green','imatrix? [Y/n] >')} ").strip().lower() != 'n'
+
+    # Confirm
+    print(f"\n  {'─'*50}")
+    print(f"  {c('bold','Model:')}   {hf_id}")
+    print(f"  {c('bold','Quants:')}  {', '.join(quants)}")
+    print(f"  {c('bold','imatrix:')} {'yes ★' if use_imatrix else 'no'}")
+    if params:
+        for q in quants:
+            print(f"  {c('bold','Output:')}  ~{vram(params,q)}GB  ({q})")
+    print(f"  {c('bold','Dest:')}    /root/axis-mundi/models/")
+    print(f"  {'─'*50}\n")
+
+    if input(f"  {c('green','Proceed? [Y/n] >')} ").strip().lower() == 'n':
+        sys.exit(0)
+
+    # Launch
+    script = Path(__file__).parent / "quantize.sh"
+    imatrix_flag = "1" if use_imatrix else "0"
+    os.execv("/bin/bash", ["bash", str(script), hf_id, ",".join(quants), imatrix_flag])
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if not args:
+        interactive()
+    elif args[0] == "--list":
+        print_models()
+    elif args[0] == "--quants":
+        print_quant_guide()
+    elif args[0] == "--size":
+        print_models(max_ram=float(args[1]))
+    else:
+        hf_id  = args[0]
+        quants = args[1] if len(args)>1 else "Q5_K_M"
+        imatrix= args[2] if len(args)>2 else "1"
+        script = Path(__file__).parent / "quantize.sh"
+        os.execv("/bin/bash", ["bash", str(script), hf_id, quants, imatrix])

@@ -1,0 +1,102 @@
+#!/bin/bash
+# Sovereign AI Copilot - Split Pane Mode
+# Ctrl+Alt+Space toggles AI assistant in tmux split
+
+set -e
+
+TMUX_SESSION="ai-copilot"
+SPLIT_SIZE=30  # Percentage for AI pane
+
+# ── CONFIG ─────────────────────────────────────────────────────
+AMALLO_URL="${AMALLO_URL:-https://axismundi.fun}"
+AMALLO_KEY="${AMALLO_KEY:-$(cat ~/.config/amallo/key 2>/dev/null || echo '')}"
+CHAT_HISTORY="$HOME/.local/share/amallo/copilot-chat.jsonl"
+PROMPT_FILE="$HOME/.local/share/amallo/copilot-prompt.tmp"
+RESPONSE_FILE="$HOME/.local/share/amallo/copilot-response.tmp"
+
+mkdir -p "$(dirname "$CHAT_HISTORY")"
+
+# ── FUNCTIONS ──────────────────────────────────────────────────
+is_tmux() {
+    [[ -n "$TMUX" ]]
+}
+
+ai_pane_exists() {
+    tmux list-panes -F '#{pane_title}' | grep -q "^AI-COPILOT$"
+}
+
+get_ai_pane_id() {
+    tmux list-panes -F '#{pane_id} #{pane_title}' | grep "AI-COPILOT" | cut -d' ' -f1
+}
+
+create_ai_pane() {
+    # Split horizontally (bottom pane for AI)
+    tmux split-window -v -l ${SPLIT_SIZE}% -P
+    AI_PANE=$(tmux display-message -p '#{pane_id}')
+    tmux select-pane -t "$AI_PANE" -T "AI-COPILOT"
+    
+    # Start AI chat interface in the pane
+    tmux send-keys -t "$AI_PANE" "~/.local/bin/sovereign-copilot-chat" C-m
+    
+    # Switch back to main pane
+    tmux select-pane -U
+    
+    echo "✓ AI Copilot pane created (Ctrl+Alt+Space to toggle)"
+}
+
+toggle_ai_pane() {
+    if ai_pane_exists; then
+        # Close AI pane
+        AI_PANE=$(get_ai_pane_id)
+        tmux kill-pane -t "$AI_PANE"
+        rm -f "$PROMPT_FILE" "$RESPONSE_FILE"
+        echo "✓ AI Copilot disabled"
+    else
+        # Create AI pane
+        create_ai_pane
+    fi
+}
+
+send_to_ai() {
+    if ! ai_pane_exists; then
+        echo "✗ AI Copilot not active. Press Ctrl+Alt+Space to enable."
+        return 1
+    fi
+    
+    PROMPT="$1"
+    AI_PANE=$(get_ai_pane_id)
+    
+    # Write prompt to temp file
+    echo "$PROMPT" > "$PROMPT_FILE"
+    
+    # Trigger AI response in copilot pane
+    tmux send-keys -t "$AI_PANE" C-m
+}
+
+# ── MAIN ───────────────────────────────────────────────────────
+case "${1:-toggle}" in
+    toggle)
+        if ! is_tmux; then
+            echo "✗ Not in tmux. Start with: tmux"
+            exit 1
+        fi
+        toggle_ai_pane
+        ;;
+    
+    send)
+        send_to_ai "${2:-}"
+        ;;
+    
+    status)
+        if is_tmux && ai_pane_exists; then
+            echo "✓ AI Copilot active"
+        else
+            echo "✗ AI Copilot inactive"
+        fi
+        ;;
+    
+    *)
+        echo "Usage: $0 {toggle|send|status}"
+        exit 1
+        ;;
+esac

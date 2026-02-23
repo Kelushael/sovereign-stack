@@ -1,0 +1,160 @@
+#!/bin/bash
+# Sovereign AI Assist - System-wide AI via keybind
+# Usage: Highlight text, press Ctrl+Shift+A
+# Sends to local Amallo server, copies response to clipboard
+
+set -e
+
+# ── CONFIG ─────────────────────────────────────────────────────
+AMALLO_URL="${AMALLO_URL:-http://localhost:8200}"
+AMALLO_KEY="${AMALLO_KEY:-}"
+DEFAULT_MODEL="${DEFAULT_MODEL:-qwen}"
+TIMEOUT="${TIMEOUT:-30}"
+NOTIFY="${NOTIFY:-true}"
+MODE="${1:-general}"  # general, code, terminal, translate
+
+# Try to get key from file if not in env
+if [[ -z "$AMALLO_KEY" && -f ~/.config/amallo/key ]]; then
+    AMALLO_KEY=$(cat ~/.config/amallo/key)
+fi
+
+# Fallback to remote if local not available
+if ! curl -s --max-time 2 "$AMALLO_URL/health" >/dev/null 2>&1; then
+    AMALLO_URL="https://axismundi.fun"
+    echo "⚠ Local Amallo not running, using remote" >&2
+fi
+
+# ── HELPERS ────────────────────────────────────────────────────
+notify() {
+    if [[ "$NOTIFY" == "true" ]] && command -v notify-send >/dev/null; then
+        notify-send -t 3000 "$1" "$2"
+    fi
+}
+
+error_exit() {
+    notify "AI Assist Error" "$1"
+    echo "✗ $1" >&2
+    exit 1
+}
+
+# ── GET SELECTION ──────────────────────────────────────────────
+SELECTED=""
+
+# Try different selection methods
+if command -v xsel >/dev/null; then
+    SELECTED=$(xsel -o 2>/dev/null || xsel -ob 2>/dev/null || echo "")
+elif command -v xclip >/dev/null; then
+    SELECTED=$(xclip -o -selection primary 2>/dev/null || xclip -o -selection clipboard 2>/dev/null || echo "")
+elif command -v pbpaste >/dev/null; then
+    # macOS
+    SELECTED=$(pbpaste)
+fi
+
+# Trim whitespace
+SELECTED=$(echo "$SELECTED" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+if [[ -z "$SELECTED" ]]; then
+    error_exit "No text selected. Highlight text and try again."
+fi
+
+# ── BUILD PROMPT BASED ON MODE ─────────────────────────────────
+case "$MODE" in
+    code)
+        PROMPT="Review this code and suggest improvements:\n\n$SELECTED"
+        MODEL="qwen"
+        ;;
+    terminal)
+        PROMPT="Convert this description to a bash command:\n\n$SELECTED"
+        MODEL="qwen"
+        ;;
+    translate)
+        PROMPT="Translate to English:\n\n$SELECTED"
+        MODEL="glm4"
+        ;;
+    fix)
+        PROMPT="Fix grammar and spelling:\n\n$SELECTED"
+        MODEL="glm4"
+        ;;
+    explain)
+        PROMPT="Explain this clearly and concisely:\n\n$SELECTED"
+        MODEL="dolphin"
+        ;;
+    general|*)
+        # Smart context detection
+        if echo "$SELECTED" | grep -qE "^\s*(def|function|class|const|let|var|import|#include)"; then
+            # Looks like code
+            PROMPT="Explain this code:\n\n$SELECTED"
+            MODEL="qwen"
+        elif echo "$SELECTED" | grep -qE "error|exception|failed|traceback"; then
+            # Looks like error
+            PROMPT="Debug this error:\n\n$SELECTED"
+            MODEL="qwen"
+        else
+            # General text
+            PROMPT="$SELECTED"
+            MODEL="$DEFAULT_MODEL"
+        fi
+        ;;
+esac
+
+notify "AI Assist" "Processing..."
+
+# ── CALL AMALLO ────────────────────────────────────────────────
+RESPONSE=$(curl -s --max-time "$TIMEOUT" -X POST "$AMALLO_URL/v1/chat/completions" \
+    -H "Authorization: Bearer $AMALLO_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model\": \"$MODEL\",
+        \"messages\": [{\"role\": \"user\", \"content\": $(echo "$PROMPT" | jq -Rs .)}],
+        \"max_tokens\": 500,
+        \"temperature\": 0.7
+    }" 2>&1)
+
+# Check for errors
+if ! echo "$RESPONSE" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
+    error_exit "API error: $(echo "$RESPONSE" | jq -r '.error.message // "Unknown error"' 2>/dev/null || echo "Failed to connect")"
+fi
+
+# Extract content
+CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+
+# Clean up common artifacts
+CONTENT=$(echo "$CONTENT" | sed 's/<|end of response|>//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+# ── COPY TO CLIPBOARD ──────────────────────────────────────────
+if command -v xsel >/dev/null; then
+    echo "$CONTENT" | xsel -ib
+elif command -v xclip >/dev/null; then
+    echo "$CONTENT" | xclip -selection clipboard
+elif command -v pbcopy >/dev/null; then
+    echo "$CONTENT" | pbcopy
+fi
+
+# ── SHOW RESULT ────────────────────────────────────────────────
+# Show in notification
+if [[ ${#CONTENT} -lt 200 ]]; then
+    notify "AI Response (copied to clipboard)" "$CONTENT"
+else
+    # Too long for notification, show in terminal overlay or zenity
+    PREVIEW="${CONTENT:0:150}..."
+    notify "AI Response (copied to clipboard)" "$PREVIEW"
+    
+    # Optional: show full response in dialog
+    if command -v zenity >/dev/null; then
+        echo "$CONTENT" | zenity --text-info --width=600 --height=400 --title="AI Response" &
+    fi
+fi
+
+# ── LOG ────────────────────────────────────────────────────────
+LOG_DIR="$HOME/.local/share/amallo"
+mkdir -p "$LOG_DIR"
+TIMESTAMP=$(date +%s)
+cat >> "$LOG_DIR/history.jsonl" << EOF
+{"timestamp":$TIMESTAMP,"mode":"$MODE","input":"$SELECTED","output":"$CONTENT","model":"$MODEL"}
+EOF
+
+# Keep only last 100 entries
+tail -100 "$LOG_DIR/history.jsonl" > "$LOG_DIR/history.jsonl.tmp"
+mv "$LOG_DIR/history.jsonl.tmp" "$LOG_DIR/history.jsonl"
+
+exit 0

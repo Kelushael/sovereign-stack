@@ -1,0 +1,102 @@
+#!/bin/bash
+# Sovereign AI Terminal Injector
+# Auto-pastes AI response AND presses Enter
+# Highlight text → Ctrl+Shift+A → AI response appears in terminal
+
+set -e
+
+# ── CONFIG ─────────────────────────────────────────────────────
+AMALLO_URL="${AMALLO_URL:-http://localhost:8200}"
+AMALLO_KEY="${AMALLO_KEY:-}"
+MODE="${1:-terminal}"
+AUTO_EXECUTE="${AUTO_EXECUTE:-true}"  # DANGEROUS: Auto-press Enter
+TIMEOUT=30
+
+# Try remote if local fails
+if ! curl -s --max-time 2 "$AMALLO_URL/health" >/dev/null 2>&1; then
+    AMALLO_URL="https://axismundi.fun"
+fi
+
+# Get key
+if [[ -z "$AMALLO_KEY" && -f ~/.config/amallo/key ]]; then
+    AMALLO_KEY=$(cat ~/.config/amallo/key)
+fi
+
+# ── GET SELECTION ──────────────────────────────────────────────
+SELECTED=$(xsel -o 2>/dev/null || xsel -ob 2>/dev/null || echo "")
+SELECTED=$(echo "$SELECTED" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+if [[ -z "$SELECTED" ]]; then
+    notify-send "AI Terminal" "No text selected"
+    exit 1
+fi
+
+# ── BUILD PROMPT ───────────────────────────────────────────────
+case "$MODE" in
+    terminal|command)
+        PROMPT="Convert to bash command (output ONLY the command, no explanation):\n\n$SELECTED"
+        MODEL="qwen"
+        ;;
+    code)
+        PROMPT="Complete this code:\n\n$SELECTED"
+        MODEL="qwen"
+        ;;
+    *)
+        PROMPT="$SELECTED"
+        MODEL="qwen"
+        ;;
+esac
+
+notify-send "AI Terminal" "Generating command..."
+
+# ── CALL AI ────────────────────────────────────────────────────
+RESPONSE=$(curl -s --max-time "$TIMEOUT" -X POST "$AMALLO_URL/v1/chat/completions" \
+    -H "Authorization: Bearer $AMALLO_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model\": \"$MODEL\",
+        \"messages\": [{\"role\": \"user\", \"content\": $(echo "$PROMPT" | jq -Rs .)}],
+        \"max_tokens\": 200,
+        \"temperature\": 0.3
+    }" 2>&1)
+
+if ! echo "$RESPONSE" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
+    notify-send "AI Terminal Error" "Failed to get response"
+    exit 1
+fi
+
+CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+CONTENT=$(echo "$CONTENT" | sed 's/<|end of response|>//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+# Clean up code blocks if present
+CONTENT=$(echo "$CONTENT" | sed 's/```bash//g' | sed 's/```//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+# If multi-line, take first line only for safety
+if [[ "$AUTO_EXECUTE" == "true" ]]; then
+    CONTENT=$(echo "$CONTENT" | head -1)
+fi
+
+# ── INJECT INTO TERMINAL ───────────────────────────────────────
+# Get active window
+WINDOW=$(xdotool getactivewindow)
+
+# Short delay to let user see notification
+sleep 0.5
+
+# Type the command
+xdotool type --delay 10 "$CONTENT"
+
+# Auto-execute if enabled
+if [[ "$AUTO_EXECUTE" == "true" ]]; then
+    notify-send "AI Terminal" "Executing: $CONTENT"
+    sleep 0.3
+    xdotool key Return
+else
+    notify-send "AI Terminal" "Command ready (press Enter to execute)"
+fi
+
+# Log
+mkdir -p ~/.local/share/amallo
+echo "{\"timestamp\":$(date +%s),\"input\":\"$SELECTED\",\"output\":\"$CONTENT\",\"executed\":$AUTO_EXECUTE}" >> ~/.local/share/amallo/terminal-inject.jsonl
+
+exit 0

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AMALLO — Sovereign AI Stack</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--o:#FF6B00;--b:#89CFF0;--p:#C084FC;--l:#BEFF00;--dark:#08030A;--t:#e0e0e0;--dt:#666}
+html,body{background:var(--dark);color:var(--t);font-family:"Courier New",monospace;line-height:1.6}
+a{color:var(--o);text-decoration:none}a:hover{text-decoration:underline}
+#bg{position:fixed;inset:0;z-index:0;opacity:0.04;pointer-events:none}
+.page{position:relative;z-index:1;max-width:860px;margin:0 auto;padding:2rem 1.5rem 6rem}
+.logo{font-size:clamp(2.5rem,8vw,5rem);font-weight:900;letter-spacing:.05em;line-height:1}
+.logo span{background:linear-gradient(135deg,var(--o),var(--p));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.tagline{color:var(--dt);font-size:.9rem;margin-top:.5rem;margin-bottom:2rem}
+.pills{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:2.5rem}
+.pill{padding:.25rem .75rem;border-radius:999px;font-size:.75rem;font-weight:700;letter-spacing:.08em}
+.o{background:rgba(255,107,0,.15);color:var(--o);border:1px solid rgba(255,107,0,.3)}
+.pp{background:rgba(192,132,252,.15);color:var(--p);border:1px solid rgba(192,132,252,.3)}
+.bl{background:rgba(137,207,240,.15);color:var(--b);border:1px solid rgba(137,207,240,.3)}
+.li{background:rgba(190,255,0,.15);color:var(--l);border:1px solid rgba(190,255,0,.3)}
+.ibox{background:#0d0408;border:1px solid rgba(255,107,0,.4);border-radius:.5rem;padding:1.5rem;margin-bottom:2.5rem}
+.ibox h2{color:var(--o);margin-bottom:1rem;font-size:.9rem;letter-spacing:.1em}
+.cmd{background:#000;border:1px solid #222;border-radius:.3rem;padding:.75rem 1rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.5rem;cursor:pointer;transition:border-color .2s}
+.cmd:hover{border-color:var(--o)}.cmd code{color:var(--l);font-size:.82rem;flex:1}
+.cpbtn{color:var(--dt);font-size:.72rem;white-space:nowrap;flex-shrink:0}.cmd:hover .cpbtn{color:var(--o)}
+.note{color:var(--dt);font-size:.75rem;margin-top:.4rem}
+section{margin-bottom:2.5rem}
+h2.st{color:var(--p);font-size:.78rem;letter-spacing:.15em;margin-bottom:1.2rem;border-bottom:1px solid #1a0a1a;padding-bottom:.4rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));gap:.9rem}
+.card{background:#0d0408;border:1px solid #1a0a1a;border-radius:.5rem;padding:1.2rem;transition:border-color .2s}
+.card:hover{border-color:rgba(192,132,252,.4)}
+.cn{color:var(--o);font-weight:700;font-size:.92rem;margin-bottom:.2rem}
+.cc{color:var(--l);font-size:.73rem;margin-bottom:.4rem}
+.cd{color:var(--dt);font-size:.8rem;line-height:1.5}
+.badge{display:inline-block;font-size:.62rem;padding:.1rem .4rem;border-radius:.2rem;margin-left:.3rem;vertical-align:middle}
+.bnew{background:rgba(190,255,0,.2);color:var(--l)}.bcore{background:rgba(255,107,0,.2);color:var(--o)}
+.arch{background:#000;border:1px solid #1a1a1a;border-radius:.5rem;padding:1.25rem;overflow-x:auto}
+.arch pre{color:#555;font-size:.76rem;line-height:1.7}
+.cta{text-align:center;padding:2.5rem 1rem;border:1px solid rgba(255,107,0,.3);border-radius:.5rem;background:#0d0408}
+.cta h2{font-size:1.4rem;margin-bottom:.6rem}.cta h2 span{color:var(--o)}
+.cta p{color:var(--dt);margin-bottom:1.25rem;font-size:.88rem}
+.btn{display:inline-block;background:var(--o);color:#000;font-weight:900;padding:.7rem 1.8rem;border-radius:.3rem;letter-spacing:.05em;font-family:inherit;font-size:.88rem;transition:opacity .2s}
+.btn:hover{opacity:.85;text-decoration:none}
+footer{color:#333;font-size:.73rem;text-align:center;padding-top:2rem;border-top:1px solid #1a0a1a}
+.ho{color:var(--o)}.hp{color:var(--p)}.hl{color:var(--l)}.hb{color:var(--b)}
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<div class="page">
+
+<header>
+  <div class="logo"><span>AMALLO</span></div>
+  <div class="tagline">sovereign AI stack &middot; axismundi.fun &middot; no cloud &middot; no middlemen &middot; your compute</div>
+  <div class="pills">
+    <span class="pill o">GGUF DIRECT</span>
+    <span class="pill pp">DIFFUSION LLM</span>
+    <span class="pill bl">OPENAI COMPATIBLE</span>
+    <span class="pill li">ZERO OLLAMA</span>
+    <span class="pill o">32GB NODE</span>
+    <span class="pill pp">MoE ROUTING</span>
+  </div>
+</header>
+
+<div class="ibox">
+  <h2>&#x26A1; ONE-LINE INSTALL</h2>
+  <div class="cmd" onclick="cp(this,'bash <(curl -s https://axismundi.fun/install.sh)')">
+    <code>bash &lt;(curl -s https://axismundi.fun/install.sh)</code>
+    <span class="cpbtn">[ copy ]</span>
+  </div>
+  <div class="cmd" onclick="cp(this,'git clone https://github.com/Kelushael/sovereign-stack && cd sovereign-stack && bash install.sh')">
+    <code>git clone https://github.com/Kelushael/sovereign-stack &amp;&amp; cd sovereign-stack &amp;&amp; bash install.sh</code>
+    <span class="cpbtn">[ copy ]</span>
+  </div>
+  <p class="note">Installs: axis CLI &middot; sovereign-copilot &middot; keybinds &middot; amallo-brain &middot; amallo-quant &middot; amallo-diffusion</p>
+</div>
+
+<section>
+  <h2 class="st">ARCHITECTURE</h2>
+  <div class="arch"><pre>
+  <span class="ho">YOUR LAPTOP</span>  thin client, zero compute, zero RAM used for AI
+      |
+      |  HTTPS  (OpenAI-compatible API)
+      v
+  <span class="ho">axismundi.fun</span>  187.77.208.28  8 cores  32GB  400GB
+      |
+      +-- <span class="hp">amallo-brain</span>  :8100   MoE router  (intent to optimal backend)
+      |       |
+      |       +-- <span class="ho">gguf backend</span>   llama.cpp direct  NO Ollama
+      |       |       +-- dolphin-mistral   chat / fallback
+      |       |       +-- qwen2.5-coder     code generation
+      |       |       +-- deepseek-r1       reasoning / math
+      |       |
+      |       +-- <span class="hp">diffusion backend</span>  :8200  LLaDA masked diffusion
+      |               +-- LLaDA-8B          FIM / code editing
+      |               +-- LLaDA2.1-mini     parallel generation (Feb 2026)
+      |
+      +-- <span class="hl">amallo_server.py</span>  true sovereign: llama-cli + GGUF, NO Ollama
+
+  <span class="hb">KEY INSIGHT:</span>  Ollama runs on YOUR machine, uses YOUR RAM, phones home.
+                Amallo runs on YOUR NODE. Your laptop is just a terminal.</pre></div>
+</section>
+
+<section>
+  <h2 class="st">THE STACK</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="cn">axis <span class="badge bcore">CORE</span></div>
+      <div class="cc">axis "question" &nbsp;|&nbsp; axis --model auto "..." &nbsp;|&nbsp; axis (REPL)</div>
+      <div class="cd">Unified sovereign CLI. One-shot queries, interactive REPL, slash commands (/scrape /run /read /save /model), session memory, auto-routes to brain/diffusion/gguf.</div>
+    </div>
+    <div class="card">
+      <div class="cn">amallo-brain <span class="badge bnew">NEW</span></div>
+      <div class="cc">amallo-brain &nbsp;&rarr;&nbsp; localhost:8100 &nbsp;|&nbsp; dashboard at :8100/</div>
+      <div class="cd">MoE routing at the API level — not inside a model, BETWEEN models. Classifies intent in 0ms (regex, no LLM needed) then routes to optimal specialist. SQLite telemetry.</div>
+    </div>
+    <div class="card">
+      <div class="cn">amallo-diffusion <span class="badge bnew">NEW</span></div>
+      <div class="cc">amallo-diffusion &nbsp;&rarr;&nbsp; localhost:8200</div>
+      <div class="cd">Masked Diffusion LLM server (LLaDA-8B). Generates entire response in parallel — not token-by-token. Best for FIM, code editing, rewrites. OpenAI API compatible.</div>
+    </div>
+    <div class="card">
+      <div class="cn">amallo-quant <span class="badge bnew">NEW</span></div>
+      <div class="cc">amallo-quant &nbsp;|&nbsp; amallo-quant --list &nbsp;|&nbsp; amallo-quant --quants</div>
+      <div class="cd">Interactive GGUF quantizer. All 3 generations: Legacy, K-quants (superblocks, 2-level), I-quants (vector codebook). imatrix calibration. RAM estimator for 32GB node.</div>
+    </div>
+    <div class="card">
+      <div class="cn">sovereign-copilot</div>
+      <div class="cc">Ctrl+Alt+Space &nbsp;&rarr;&nbsp; tmux split-pane AI copilot</div>
+      <div class="cd">Toggle AI assistant in a tmux split. Captures context from main pane, detects errors, sends fixes. Press x to execute suggestions. Full session memory.</div>
+    </div>
+    <div class="card">
+      <div class="cn">sovereign-ai-assist</div>
+      <div class="cc">Ctrl+Shift+A/C/E/F/T &nbsp; global keybinds, any app</div>
+      <div class="cd">System-wide AI keybind handler. A=ask, C=code, E=explain, F=fix, T=terminal inject. Auto-copies selection, sends to node, types response into active window.</div>
+    </div>
+    <div class="card">
+      <div class="cn">quantize.sh</div>
+      <div class="cc">bash quantize.sh mistralai/Mistral-7B Q4_K_M,Q5_K_M 1</div>
+      <div class="cd">Full pipeline: HF download &rarr; F16 GGUF &rarr; imatrix calibration (WikiText) &rarr; quantize. Third arg enables imatrix. Outputs to /root/axis-mundi/models/.</div>
+    </div>
+    <div class="card">
+      <div class="cn">deploy-models.sh</div>
+      <div class="cc">bash deploy-models.sh</div>
+      <div class="cd">Downloads 9 pre-quantized GGUFs from bartowski/HuggingFace (~59GB total). Qwen2.5-Coder, DeepSeek-R1-14B, Llama-3.1-8B and more. SSH-aware.</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2 class="st">BRAIN ROUTING TABLE</h2>
+  <div class="arch"><pre>
+  INTENT       BACKEND     MODEL                  WHY
+  -----------------------------------------------------------------------
+  <span class="hp">fim</span>          diffusion   LLaDA-8B               bidirectional sees full context
+  <span class="hp">code_edit</span>    diffusion   LLaDA-8B               parallel refinement of existing code
+  <span class="ho">code_gen</span>     gguf        qwen2.5-coder           trained on code specifically
+  <span class="ho">math</span>         gguf        deepseek-r1             chain-of-thought reasoning
+  <span class="ho">reasoning</span>   gguf        deepseek-r1             sequential dependency helps
+  <span class="hl">quick</span>        gguf        dolphin-mistral         fastest, smallest that fits
+  <span class="hb">chat</span>         gguf        dolphin-mistral         general fallback
+
+  Classification: pure regex, 0ms, zero LLM cost
+  Speculative:    fast model first, escalate on low confidence
+  Flash-DLM:      diffusion draft + GGUF verifier pass (uses existing node assets)</pre></div>
+</section>
+
+<section>
+  <h2 class="st">GGUF QUANTIZATION CHEAT SHEET</h2>
+  <div class="arch"><pre>
+  GEN         NAME       BITS  NOTES
+  -----------------------------------------------------------------------
+  Legacy      Q4_0       4.0   symmetric linear, deprecated standalone
+  Legacy      Q4_1       4.0   asymmetric, stores min offset
+  K-quant  *  <span class="ho">Q4_K_M</span>     4.5   DAILY DRIVER  superblocks, 2-level quant
+  K-quant  *  <span class="ho">Q5_K_M</span>     5.5   RECOMMENDED   extra RAM worth it
+  I-quant     IQ2_XXS    2.1   vector codebook, 700GB to 100GB (DeepSeek R1)
+  I-quant  *  <span class="hp">IQ4_XS</span>     4.3   vector sweet spot
+  K-quant     Q6_K       6.6   near-lossless archival
+
+  K = Kawrakow (the developer who wrote the PR, NOT k-means)
+  I = Importance matrix calibration
+  imatrix: WikiText calibration, scores weights by output sensitivity,
+           decouples quant/dequant constants via quadratic optimization.
+           Always use it. 20 min extra. Free quality boost. What bartowski does.</pre></div>
+</section>
+
+<div class="cta">
+  <h2>Ready? <span>Launch the terminal.</span></h2>
+  <p>Talk to your sovereign node directly from the browser. No install required.</p>
+  <a href="/terminal.html" class="btn">OPEN TERMINAL &rarr;</a>
+</div>
+
+</div>
+<footer>
+  <p>axismundi.fun &middot; <a href="https://github.com/Kelushael/sovereign-stack">github.com/Kelushael/sovereign-stack</a> &middot; built by Kelushael &middot; no tracking &middot; no cloud &middot; sovereign</p>
+</footer>
+
+<script>
+const cvs=document.getElementById('bg'),ctx=cvs.getContext('2d');let drops;
+function init(){cvs.width=window.innerWidth;cvs.height=window.innerHeight;drops=Array(Math.floor(cvs.width/18)).fill(1)}
+function draw(){ctx.fillStyle='rgba(8,3,10,.06)';ctx.fillRect(0,0,cvs.width,cvs.height);const ch='アイウエオ0123456789AMALLO';drops.forEach((y,i)=>{const c=ch[Math.floor(Math.random()*ch.length)];const r=Math.random();ctx.fillStyle=r<.33?'rgba(255,107,0,.9)':r<.66?'rgba(192,132,252,.9)':'rgba(190,255,0,.9)';ctx.font='11px monospace';ctx.fillText(c,i*18,y*18);if(y*18>cvs.height&&Math.random()>.975)drops[i]=0;drops[i]++})}
+init();setInterval(draw,60);window.addEventListener('resize',init);
+function cp(el,txt){navigator.clipboard.writeText(txt||el.querySelector('code').textContent).then(()=>{const b=el.querySelector('.cpbtn');b.textContent='[ copied! ]';setTimeout(()=>b.textContent='[ copy ]',1500)})}
+</script>
+</body>
+</html>

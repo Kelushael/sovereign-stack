@@ -351,6 +351,23 @@ def cmd_model(args, session):
 def cmd_models(args, session):
     cmd_model('', session)
 
+@command('/chain', aliases=('/c',),
+         usage='/chain',
+         desc='Toggle chain mode: auto-run code from each AI response')
+def cmd_chain(args, session):
+    session['chain'] = not session.get('chain', False)
+    state = session['chain']
+    save_session(session)
+    if state:
+        print(c(C.PURPLE, "  ⛓  CHAIN ON"))
+        print(c(C.DIM,    "  On each response:"))
+        print(c(C.DIM,    "    1. double Enter (clears any y/n gate)"))
+        print(c(C.DIM,    "    2. extract code from response"))
+        print(c(C.DIM,    "    3. paste + run it"))
+        print(c(C.DIM,    "  /chain again or Ctrl+C to stop"))
+    else:
+        print(c(C.DIM, "  ⛓  CHAIN OFF"))
+
 @command('/clear', aliases=('/reset',),
          usage='/clear',
          desc='Clear conversation memory (start fresh)')
@@ -440,6 +457,7 @@ def dispatch(text, session):
         session['messages'] = trim_context(session['messages'])
         log_history('assistant', reply)
         save_session(session)
+        return reply   # caller (repl) uses this for chain mode
 
 def print_response(text):
     """Pretty-print AI response."""
@@ -452,13 +470,24 @@ def print_response(text):
         elif line.startswith('- ') or line.startswith('* '):
             print(c(C.CYAN, '  •') + ' ' + line[2:])
         else:
-            # Word wrap
             if len(line) > width:
                 wrapped = fill(line, width=width)
                 for wl in wrapped.split('\n'):
                     print('  ' + wl)
             else:
                 print('  ' + line)
+
+def extract_code(text):
+    """Pull the first code block out of a response, or return full text."""
+    # fenced code block: ```lang\n...code...\n```
+    m = re.search(r'```(?:\w+)?\n?([\s\S]*?)```', text)
+    if m:
+        return m.group(1).strip()
+    # single backtick inline and barely any other text
+    m = re.search(r'`([^`]+)`', text)
+    if m and len(re.sub(r'`[^`]+`', '', text).strip()) < 20:
+        return m.group(1).strip()
+    return text.strip()
 
 # ── INTERACTIVE CHAT ──────────────────────────────────────────────────────────
 def repl(session):
@@ -475,10 +504,31 @@ def repl(session):
             if text.lower() in ('exit', 'quit', 'bye', '/exit', '/quit'):
                 print(c(C.DIM, "  bye"))
                 break
-            dispatch(text, session)
+
+            reply = dispatch(text, session)
+
+            # ── CHAIN MODE ────────────────────────────────────────────
+            # After every AI response, if chain is ON:
+            #   step 1: double Enter (y) — clears any y/n gate silently
+            #   step 2: extract code from response
+            #   step 3: paste it back as next input and run it
+            while reply and session.get('chain'):
+                code = extract_code(reply)
+                # step 1: two silent 'y' dispatches for confirmation gates
+                dispatch('y', session)
+                dispatch('y', session)
+                # step 2+3: run the extracted code as next prompt
+                print(c(C.PURPLE, f"  ⛓  chaining: ") + c(C.DIM, code[:80]))
+                reply = dispatch(code, session)
+
         except KeyboardInterrupt:
             print()
-            print(c(C.DIM, "  (Ctrl+C — type 'exit' to quit)"))
+            if session.get('chain'):
+                session['chain'] = False
+                save_session(session)
+                print(c(C.DIM, "  ⛓  chain stopped"))
+            else:
+                print(c(C.DIM, "  (Ctrl+C — type 'exit' to quit)"))
         except EOFError:
             print()
             break

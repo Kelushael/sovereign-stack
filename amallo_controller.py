@@ -228,6 +228,43 @@ def run_inference(model_name, messages, max_tokens=2048, temperature=0.7):
 
     return '[No inference backend available. Run: ollama pull dolphin-mistral]'
 
+def run_inference_stream(model_name, messages, max_tokens=2048, temperature=0.7):
+    """Generator: yields SSE-formatted chunks for streaming responses."""
+    prompt = build_prompt(messages)
+    model_id = 'amallo-' + uuid.uuid4().hex[:8]
+    created = int(time.time())
+    try:
+        data = json.dumps({'model': model_name, 'prompt': prompt, 'stream': True,
+                           'options': {'num_predict': max_tokens, 'temperature': temperature}}).encode()
+        req = urllib.request.Request('http://127.0.0.1:11434/api/generate', data=data, method='POST')
+        req.add_header('Content-Type', 'application/json')
+        with urllib.request.urlopen(req, timeout=180) as r:
+            for raw_line in r:
+                line = raw_line.decode('utf-8', errors='replace').strip()
+                if not line: continue
+                try:
+                    chunk = json.loads(line)
+                    token = chunk.get('response', '')
+                    if token:
+                        payload = json.dumps({
+                            'id': model_id, 'object': 'chat.completion.chunk',
+                            'created': created, 'model': model_name,
+                            'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': token},
+                                         'finish_reason': None}]
+                        })
+                        yield f'data: {payload}\n\n'.encode()
+                    if chunk.get('done'):
+                        yield b'data: [DONE]\n\n'
+                        return
+                except: continue
+    except Exception as e:
+        err = json.dumps({'id': model_id, 'object': 'chat.completion.chunk', 'created': created,
+                          'model': model_name,
+                          'choices': [{'index': 0, 'delta': {'content': f'[Stream error: {e}]'},
+                                       'finish_reason': 'stop'}]})
+        yield f'data: {err}\n\n'.encode()
+    yield b'data: [DONE]\n\n'
+
 def run_inference_ssh(sess, messages, model, max_tokens, temperature):
     client = sess['client']
     prompt = build_prompt(messages)
@@ -442,7 +479,20 @@ class AmalloHandler(BaseHTTPRequestHandler):
             model_name = models.resolve_ollama(requested)
             models.current = model_name
             messages = inject_sovereign_context(model_name, messages)
-            text = run_inference(model_name, messages, body.get('max_tokens',2048), body.get('temperature',0.7))
+            max_tok = body.get('max_tokens', 2048)
+            temp    = body.get('temperature', 0.7)
+            if body.get('stream', False):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Connection', 'keep-alive')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                for chunk in run_inference_stream(model_name, messages, max_tok, temp):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                return
+            text = run_inference(model_name, messages, max_tok, temp)
             self.send_json({'id':'amallo-'+uuid.uuid4().hex[:8],'object':'chat.completion',
                             'created':int(time.time()),'model':model_name,
                             'choices':[{'index':0,'message':{'role':'assistant','content':text},'finish_reason':'stop'}],

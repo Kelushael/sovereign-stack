@@ -348,6 +348,32 @@ class AmalloHandler(BaseHTTPRequestHandler):
                             'ssh_sessions_active': len(ssh_sessions),
                             'operator': info.get('identity') if info else None}); return
 
+        if path == '/mesh/nodes':
+            self.send_json({'mesh': 'sovereign-stack', 'nodes': [
+                {'id': 'model',    'ip': '187.77.208.28', 'role': 'MODEL',    'status': 'active',
+                 'purpose': 'pure AI inference', 'models': models.available()},
+                {'id': 'gateway',  'ip': '76.13.24.113',  'role': 'GATEWAY',  'status': 'active',
+                 'purpose': 'nginx mesh router / SSL'},
+                {'id': 'web',      'ip': '185.28.23.43',  'role': 'WEB',      'status': 'active',
+                 'purpose': 'CLANK UI / dashboard / static'},
+                {'id': 'operator', 'ip': '72.61.78.161',  'role': 'OPERATOR', 'status': 'pending',
+                 'purpose': 'axis relay / AXISCHROME / green-team'},
+            ]}); return
+
+        if path == '/mesh-deploy.sh':
+            deploy_path = os.path.join(os.path.dirname(__file__), 'tools', 'mesh-deploy.sh')
+            if os.path.exists(deploy_path):
+                body = open(deploy_path, 'rb').read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain')
+                self.send_header('Content-Length', len(body))
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_json({'error': 'mesh-deploy.sh not found'}, 404)
+            return
+
         if path == '/amallo/keys':
             ok, info = self.auth()
             if not ok or (info and info.get('role') != 'master'):

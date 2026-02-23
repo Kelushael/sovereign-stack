@@ -1,0 +1,83 @@
+{
+  "mesh": "sovereign-stack",
+  "version": "1.0",
+  "owner": "marcus",
+  "nodes": {
+    "gateway": {
+      "id": "gateway",
+      "host": "axismundi.fun",
+      "ip": "76.13.24.113",
+      "role": "GATEWAY",
+      "os": "AlmaLinux 10",
+      "vcpu": 8,
+      "services": ["nginx", "ssl", "mesh-router"],
+      "endpoints": {
+        "https": "https://axismundi.fun",
+        "http": "http://76.13.24.113"
+      },
+      "routes": {
+        "/v1/": "model",
+        "/amallo/": "model",
+        "/clank": "web",
+        "/dashboard": "web",
+        "/operate": "operator",
+        "/green-team": "operator"
+      },
+      "status": "active"
+    },
+    "model": {
+      "id": "model",
+      "host": "srv1399361.hstgr.cloud",
+      "ip": "187.77.208.28",
+      "role": "MODEL",
+      "os": "Ubuntu 24.04",
+      "vcpu": 8,
+      "ram_gb": 32,
+      "services": ["ollama", "amallo_controller"],
+      "endpoints": {
+        "https": "https://axismundi.fun",
+        "internal": "http://187.77.208.28:8200"
+      },
+      "models": ["dolphin-mistral:latest", "glm4:latest"],
+      "sov_key": "SOV-A8FB-3C9A-570C-656B",
+      "port": 8200,
+      "ollama_port": 11434,
+      "status": "active",
+      "notes": "PURE INFERENCE ONLY — nothing else runs here. Keep RAM free for models."
+    },
+    "web": {
+      "id": "web",
+      "host": "srv1397652.hstgr.cloud",
+      "ip": "185.28.23.43",
+      "role": "WEB",
+      "os": "Ubuntu 24.04",
+      "vcpu": 4,
+      "services": ["nginx", "clank", "dashboard", "static-assets"],
+      "endpoints": {
+        "http": "http://185.28.23.43",
+        "https": "pending-ssl"
+      },
+      "status": "active",
+      "notes": "Serves clank.html, dashboard, LEMP stack. UI layer only — no AI compute here."
+    },
+    "operator": {
+      "id": "operator",
+      "host": "srv1339155.hstgr.cloud",
+      "ip": "72.61.78.161",
+      "role": "OPERATOR",
+      "os": "Ubuntu 24.04",
+      "vcpu": 8,
+      "services": ["axis", "kernel-mustard", "axischrome", "green-team", "axis-relay"],
+      "endpoints": {
+        "relay": "http://72.61.78.161:8300",
+        "axischrome": "http://72.61.78.161:8600"
+      },
+      "status": "pending-deploy",
+      "notes": "Claude Code node. Runs axis relay, AXISCHROME, operator agent, green-team. No models."
+    }
+  },
+  "mesh_key": "SOV-A8FB-3C9A-570C-656B",
+  "inference_primary": "model",
+  "inference_fallback": "gateway",
+  "routing_mode": "role-based"
+}

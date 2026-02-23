@@ -1077,6 +1077,81 @@ def cmd_addnode(args, session):
     return '\n'.join(lines)
 
 
+def cmd_mesh(args, session):
+    """
+    /mesh [deploy <role> <ip>|status|nodes]
+    View and manage the sovereign mesh nodes.
+
+    Examples:
+      /mesh              — show all mesh nodes + live ping
+      /mesh status       — same
+      /mesh nodes        — raw node list
+    """
+    import urllib.request, json, os, concurrent.futures
+
+    MESH_NODES = {
+        'gateway':  {'ip': '76.13.24.113',  'role': 'GATEWAY',  'host': 'axismundi.fun',        'check': 'https://axismundi.fun/amallo/status'},
+        'model':    {'ip': '187.77.208.28', 'role': 'MODEL',    'host': 'srv1399361',            'check': 'https://axismundi.fun/v1/models'},
+        'web':      {'ip': '185.28.23.43',  'role': 'WEB',      'host': 'srv1397652',            'check': 'http://185.28.23.43/health'},
+        'operator': {'ip': '72.61.78.161',  'role': 'OPERATOR', 'host': 'srv1339155',            'check': 'http://72.61.78.161:8300/health'},
+    }
+    DEPLOY_CMDS = {
+        'gateway':  'bash ~/sovereign-stack/tools/mesh-deploy.sh --role gateway',
+        'model':    'bash ~/sovereign-stack/tools/mesh-deploy.sh --role model',
+        'web':      'bash ~/sovereign-stack/tools/mesh-deploy.sh --role web',
+        'operator': 'bash ~/sovereign-stack/tools/mesh-deploy.sh --role operator',
+    }
+    SOV_KEY = 'SOV-A8FB-3C9A-570C-656B'
+
+    def ping(node_id, info):
+        try:
+            req = urllib.request.Request(info['check'], headers={'Authorization': f'Bearer {SOV_KEY}'})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                return node_id, r.status, r.read(200).decode('utf-8','replace').strip()
+        except Exception as e:
+            return node_id, 0, str(e)[:60]
+
+    lines = []
+    lines.append('')
+    lines.append('╔══════════════════════════════════════════════════════════╗')
+    lines.append('║          SOVEREIGN MESH — axismundi.fun                  ║')
+    lines.append('╚══════════════════════════════════════════════════════════╝')
+    lines.append('')
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {ex.submit(ping, nid, info): nid for nid, info in MESH_NODES.items()}
+        results = {}
+        for f in concurrent.futures.as_completed(futures):
+            nid, code, body = f.result()
+            results[nid] = (code, body)
+
+    ROLE_PURPOSE = {
+        'gateway':  'nginx mesh router / SSL / domain',
+        'model':    'pure AI inference — dolphin-mistral + glm4',
+        'web':      'CLANK UI / dashboard / static assets',
+        'operator': 'axis relay / AXISCHROME / green-team',
+    }
+
+    for nid, info in MESH_NODES.items():
+        code, body = results.get(nid, (0, 'timeout'))
+        status_icon = '🟢' if code in (200, 401) else '🔴'
+        status_text = 'ONLINE' if code in (200, 401) else f'OFFLINE ({code})'
+        lines.append(f'  {status_icon}  {info["role"]:<10} {info["ip"]:<17} {status_text}')
+        lines.append(f'      Host:    {info["host"]}')
+        lines.append(f'      Purpose: {ROLE_PURPOSE[nid]}')
+        if code == 0:
+            lines.append(f'      Deploy:  ssh root@{info["ip"]}')
+            lines.append(f'               {DEPLOY_CMDS[nid]}')
+        lines.append('')
+
+    lines.append(f'  Mesh key: {SOV_KEY}')
+    lines.append(f'  Inference → https://axismundi.fun/v1/chat/completions')
+    lines.append(f'  CLANK UI  → http://185.28.23.43/clank')
+    lines.append(f'  Deploy    → curl https://axismundi.fun/mesh-deploy.sh | bash -s -- --role <role>')
+    lines.append('')
+    return '\n'.join(lines)
+
+
 _new_cmds = [
     ('/ls',       'List directory contents',       '/ls [path] [--depth N]',         cmd_ls),
     ('/cat',      'Read file contents',             '/cat <file> [--offset N] [--lines N]', cmd_cat),
@@ -1096,6 +1171,7 @@ _new_cmds = [
     ('/vchat',    'Invisible voice chat w/ log',   '/vchat [start|stream|stop|log|clear]',  cmd_vchat),
     ('/browse',   'AI sovereign browser',           '/browse <url or search query>',          cmd_browse),
     ('/addnode',  'Add sovereign node to mesh',      '/addnode <ip> [user]',                   cmd_addnode),
+    ('/mesh',     'Sovereign mesh status + deploy',  '/mesh [status|nodes]',                   cmd_mesh),
 ]
 for _name, _desc, _usage, _fn in _new_cmds:
     COMMANDS[_name] = {'fn': _fn, 'usage': _usage, 'desc': _desc}

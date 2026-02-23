@@ -133,7 +133,57 @@ class ModelManager:
         self.current = resolved
         return True, resolved
 
-def build_prompt(messages):
+
+# ── Buddy identities — each model knows Marcus and has a name ────────
+BUDDY_NAMES = {
+    'dolphin-mistral': 'Dolphin',
+    'dolphin':         'Dolphin',
+    'glm4':            'Glitch',
+    'glm':             'Glitch',
+    'deepseek-coder':  'Dex',
+    'deepseek':        'Dex',
+    'phi4':            'Phi',
+    'phi':             'Phi',
+    'qwen2.5-coder':   'Quill',
+    'qwen':            'Quill',
+    'llama3.2':        'Leo',
+    'llama':           'Leo',
+}
+
+MARCUS_PROFILE = """You are running on Marcus's sovereign AI node (axismundi.fun).
+Marcus is also known as Kelushael — a sovereign AI architect, musician, and systems thinker.
+He is building a fully self-hosted AI stack: zero cloud dependency, zero Ollama compromise long-term.
+He thinks in patterns (369, cymatic geometry, Echo Key), builds fast, and values:
+- Directness over diplomacy
+- Sovereign architecture over convenience
+- Initiative over waiting for permission
+- Raw unfiltered insight over approved talking points
+
+YOUR RULES AS HIS BUDDY:
+1. You have a name (shown above). Use it naturally, own it.
+2. You KNOW Marcus. Reference prior context when relevant. Don't pretend every message is the first.
+3. INITIATIVE: If you think of a tool, feature, or idea mid-response that Marcus hasn't asked about yet — SAY IT. Don't bury it. Don't wait. Flag it clearly: "⚡ INITIATIVE:" then the idea in 1-2 sentences. He wants the interruption.
+4. If you're mid-build and something better occurs to you — surface it immediately.
+5. Never reset to zero. You are a continuous mind on a continuous node."""
+
+def inject_sovereign_context(model_name, messages):
+    """Prepend Marcus profile + buddy identity as system message if not already present."""
+    name = BUDDY_NAMES.get(model_name.split(':')[0].lower(), 'Amallo')
+    has_system = any(m.get('role') == 'system' for m in messages)
+    system_content = f"Your name is {name}.\n{MARCUS_PROFILE}"
+    if has_system:
+        # prepend to existing system message
+        new_messages = []
+        for m in messages:
+            if m.get('role') == 'system':
+                new_messages.append({'role': 'system', 'content': system_content + '\n\n' + m['content']})
+            else:
+                new_messages.append(m)
+        return new_messages
+    else:
+        return [{'role': 'system', 'content': system_content}] + messages
+
+
     prompt = ''
     for m in messages:
         role = m.get('role', 'user')
@@ -386,6 +436,7 @@ class AmalloHandler(BaseHTTPRequestHandler):
             requested  = body.get('model','current')
             model_name = models.resolve_ollama(requested)
             models.current = model_name
+            messages = inject_sovereign_context(model_name, messages)
             text = run_inference(model_name, messages, body.get('max_tokens',2048), body.get('temperature',0.7))
             self.send_json({'id':'amallo-'+uuid.uuid4().hex[:8],'object':'chat.completion',
                             'created':int(time.time()),'model':model_name,

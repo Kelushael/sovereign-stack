@@ -300,6 +300,37 @@ def run_inference_ssh(sess, messages, model, max_tokens, temperature):
 keys   = KeyManager()
 models = ModelManager()
 
+# ── SHARED MEMORY ─────────────────────────────────────────────────────────────
+# One brain. Every interface (CLI, SMS, IDE, CLANK) reads/writes same context.
+# Keyed by identity (default: 'marcus'). Persisted to disk on every write.
+import pathlib
+MEMORY_DIR = pathlib.Path('/root/.local/share/amallo/memory')
+MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+
+def _mem_path(identity='marcus'):
+    safe = ''.join(c for c in identity if c.isalnum() or c in '-_')
+    return MEMORY_DIR / f'{safe}.json'
+
+def mem_load(identity='marcus'):
+    p = _mem_path(identity)
+    if p.exists():
+        try: return json.loads(p.read_text())
+        except: pass
+    return {'identity': identity, 'messages': [], 'model': 'dolphin-mistral:latest', 'ts': 0}
+
+def mem_save(data, identity='marcus'):
+    data['ts'] = int(time.time())
+    _mem_path(identity).write_text(json.dumps(data))
+
+def mem_append(role, content, identity='marcus', max_ctx=40):
+    d = mem_load(identity)
+    d['messages'].append({'role': role, 'content': content, 'ts': int(time.time())})
+    # keep last max_ctx messages
+    if len(d['messages']) > max_ctx:
+        d['messages'] = d['messages'][-max_ctx:]
+    mem_save(d, identity)
+    return d
+
 class AmalloHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
 
@@ -383,6 +414,14 @@ class AmalloHandler(BaseHTTPRequestHandler):
         if path == '/amallo/omni':
             self.send_json(omni_msg); return
 
+        # ── shared memory ──────────────────────────────────────────────────────
+        if path.startswith('/amallo/memory'):
+            ok, info = self.auth()
+            if not ok: self.send_json({'error': 'unauthorized'}, 401); return
+            identity = urlparse(self.path).query
+            identity = dict(p.split('=') for p in identity.split('&') if '=' in p).get('id', 'marcus')
+            self.send_json(mem_load(identity)); return
+
         self.send_json({'error': 'not found'}, 404)
 
     def do_DELETE(self):
@@ -425,6 +464,22 @@ class AmalloHandler(BaseHTTPRequestHandler):
             omni_msg = {'text': text, 'from': from_id,
                         'ts': int(time.time()), 'active': bool(text)}
             self.send_json({'broadcast': True, 'text': text, 'active': omni_msg['active']}); return
+
+        # ── shared memory write ───────────────────────────────────────────────
+        if path == '/amallo/memory':
+            ok, info = self.auth()
+            if not ok: self.send_json({'error': 'unauthorized'}, 401); return
+            identity = body.get('identity', info.get('identity','marcus') if info else 'marcus')
+            action   = body.get('action', 'append')
+            if action == 'replace':
+                d = mem_load(identity); d['messages'] = body.get('messages', []); mem_save(d, identity)
+                self.send_json({'saved': True, 'count': len(d['messages'])}); return
+            elif action == 'clear':
+                d = mem_load(identity); d['messages'] = []; mem_save(d, identity)
+                self.send_json({'cleared': True}); return
+            else:
+                d = mem_append(body.get('role','user'), body.get('content',''), identity)
+                self.send_json({'saved': True, 'count': len(d['messages'])}); return
 
         if path == '/amallo/ssh/connect':
             if not PARAMIKO:
@@ -498,9 +553,23 @@ class AmalloHandler(BaseHTTPRequestHandler):
             if not ok:
                 self.send_json({'error':'unauthorized',
                                 'hint':'POST /amallo/keys/create with {"identity":"yourname"} to get a sovereign key'},401); return
+            identity = (info.get('identity') if info else None) or body.get('identity', 'marcus')
             messages = body.get('messages',[])
             if not messages and body.get('message'): messages=[{'role':'user','content':body['message']}]
             if not messages and body.get('prompt'):  messages=[{'role':'user','content':body['prompt']}]
+            # ── shared memory: prepend history if client sends shallow context ──
+            if body.get('use_memory', True) and len(messages) <= 3:
+                mem = mem_load(identity)
+                prior = mem.get('messages', [])[-20:]  # last 20 exchanges
+                # only inject prior non-system messages that aren't already there
+                existing_contents = {m['content'] for m in messages}
+                inject = [m for m in prior if m.get('content') not in existing_contents]
+                messages = inject + messages
+            # ── persist user message ───────────────────────────────────────────
+            user_msgs = [m for m in messages if m.get('role') == 'user']
+            if user_msgs:
+                try: mem_append('user', user_msgs[-1]['content'], identity)
+                except: pass
             requested  = body.get('model','current')
             model_name = models.resolve_ollama(requested)
             models.current = model_name
@@ -514,16 +583,30 @@ class AmalloHandler(BaseHTTPRequestHandler):
                 self.send_header('Connection', 'keep-alive')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
+                full_response = []
                 for chunk in run_inference_stream(model_name, messages, max_tok, temp):
                     self.wfile.write(chunk)
                     self.wfile.flush()
+                    # collect tokens for memory
+                    try:
+                        import re as _re
+                        for line in chunk.decode().split('\n'):
+                            if line.startswith('data:') and '[DONE]' not in line:
+                                tok = json.loads(line[5:].strip())['choices'][0]['delta'].get('content','')
+                                full_response.append(tok)
+                    except: pass
+                try: mem_append('assistant', ''.join(full_response), identity)
+                except: pass
                 return
             text = run_inference(model_name, messages, max_tok, temp)
+            # ── persist assistant response ─────────────────────────────────────
+            try: mem_append('assistant', text, identity)
+            except: pass
             self.send_json({'id':'amallo-'+uuid.uuid4().hex[:8],'object':'chat.completion',
                             'created':int(time.time()),'model':model_name,
                             'choices':[{'index':0,'message':{'role':'assistant','content':text},'finish_reason':'stop'}],
                             'sovereign':True,'node':'amallo-controller',
-                            'operator':info.get('identity') if info else 'unknown'}); return
+                            'operator':identity}); return
 
         self.send_json({'error':'not found'},404)
 

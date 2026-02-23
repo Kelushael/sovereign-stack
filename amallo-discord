@@ -31,11 +31,12 @@ from aiohttp import web
 AMALLO_URL   = os.environ.get('AMALLO_URL',   'https://axismundi.fun')
 BRAIN_URL    = os.environ.get('BRAIN_URL',    'http://localhost:8100')
 BOT_TOKEN    = os.environ.get('DISCORD_BOT_TOKEN', '')
-GUILD_ID     = os.environ.get('DISCORD_GUILD_ID', '')   # optional, faster sync
+GUILD_ID     = os.environ.get('DISCORD_GUILD_ID', '')
 DEMO_BASE    = os.environ.get('DEMO_BASE',    'https://axismundi.fun/demo')
 DEMO_PORT    = int(os.environ.get('DEMO_PORT', 8300))
-DEMO_TTL     = 33 * 60   # 33 minutes in seconds
+DEMO_TTL     = 33 * 60
 KEY_FILE     = Path.home() / '.config/amallo/key'
+IDENTITY     = 'marcus'   # whose shared memory we sync with
 
 # ── COLORS ────────────────────────────────────────────────────────────────────
 ORANGE = 0xFF6B00
@@ -209,15 +210,87 @@ async def start_demo_server():
     await site.start()
     print(f'  ✔ Demo server running on :{DEMO_PORT}')
 
-# ── AMALLO API CALL ───────────────────────────────────────────────────────────
-async def ask_amallo(messages: list, model: str = 'current') -> str:
-    key = KEY_FILE.read_text().strip() if KEY_FILE.exists() else 'demo'
+# ── SHARED MEMORY — same brain across CLI, SMS, Discord, IDE ─────────────────
+def _sov_key():
+    return KEY_FILE.read_text().strip() if KEY_FILE.exists() else 'SOV-A8FB-3C9A-570C-656B'
+
+def mem_get(identity=IDENTITY) -> list:
+    """Pull shared memory from the node."""
+    try:
+        req = urllib.request.Request(
+            f'{AMALLO_URL}/amallo/memory?id={identity}',
+            headers={'Authorization': f'Bearer {_sov_key()}'}
+        )
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return json.loads(r.read()).get('messages', [])
+    except:
+        return []
+
+def mem_push(role, content, identity=IDENTITY):
+    """Append one message to shared memory on the node."""
+    try:
+        data = json.dumps({'identity': identity, 'action': 'append',
+                           'role': role, 'content': content}).encode()
+        req = urllib.request.Request(
+            f'{AMALLO_URL}/amallo/memory', data=data, method='POST',
+            headers={'Authorization': f'Bearer {_sov_key()}', 'Content-Type': 'application/json'}
+        )
+        urllib.request.urlopen(req, timeout=6)
+    except:
+        pass
+
+# ── EXPECT LIST — "expect Josh on the server" ─────────────────────────────────
+# Marcus tells the bot who's coming. Bot greets them when they first speak.
+# Stored in shared memory as a special system note so every interface sees it.
+expected_users: dict[str, str] = {}   # lowercase_name → note from Marcus
+greeted_users:  set[str]       = set()
+
+def load_expected():
+    """Pull expected_users out of shared memory (tagged entries)."""
+    msgs = mem_get()
+    for m in msgs:
+        if m.get('role') == 'system' and m.get('content','').startswith('EXPECT:'):
+            try:
+                parts = m['content'][7:].split('|', 1)
+                name  = parts[0].strip().lower()
+                note  = parts[1].strip() if len(parts) > 1 else ''
+                expected_users[name] = note
+            except:
+                pass
+
+def set_expected(name: str, note: str = ''):
+    """Marcus tells the bot to expect someone."""
+    expected_users[name.lower()] = note
+    mem_push('system', f'EXPECT:{name}|{note}')
+
+def check_expected(display_name: str) -> str | None:
+    """Returns a greeting note if this user was expected, None otherwise."""
+    key = display_name.lower()
+    for expected_name, note in expected_users.items():
+        if expected_name in key or key in expected_name:
+            if key not in greeted_users:
+                greeted_users.add(key)
+                return note
+    return None
+
+# ── AMALLO API CALL — with shared memory context ──────────────────────────────
+async def ask_amallo(user_message: str, extra_system: str = '') -> str:
+    key = _sov_key()
+    # load last 20 messages from shared memory for context
+    prior = mem_get()[-20:]
+    messages = [{'role': 'system', 'content': SYSTEM_PROMPT + ('\n' + extra_system if extra_system else '')}]
+    messages += [{'role': m['role'], 'content': m['content']}
+                 for m in prior if m.get('role') in ('user','assistant')]
+    messages.append({'role': 'user', 'content': user_message})
+
     try:
         data = json.dumps({
-            'model': model,
+            'model': 'current',
             'messages': messages,
             'max_tokens': 512,
-            'temperature': 0.7
+            'temperature': 0.7,
+            'use_memory': False,   # we're already injecting it above
+            'identity': IDENTITY
         }).encode()
         req = urllib.request.Request(
             f'{AMALLO_URL}/v1/chat/completions', data=data,
@@ -228,41 +301,41 @@ async def ask_amallo(messages: list, model: str = 'current') -> str:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return json.loads(r.read())
         resp = await loop.run_in_executor(None, do_req)
-        return resp['choices'][0]['message']['content'].strip()[:1800]
+        reply = resp['choices'][0]['message']['content'].strip()[:1800]
+        # persist both sides to shared memory
+        mem_push('user',      user_message)
+        mem_push('assistant', reply)
+        return reply
     except Exception as e:
         return f"Node offline or error: {e}"
 
 # ── BOT SETUP ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True   # needed for on_member_join
 bot = commands.Bot(command_prefix='!', intents=intents)
-
-# per-channel conversation memory
-conv_memory: dict[int, list] = {}   # channel_id → messages list
-
-def get_conv(channel_id: int) -> list:
-    if channel_id not in conv_memory:
-        conv_memory[channel_id] = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-    return conv_memory[channel_id]
-
-def trim_conv(msgs: list, n: int = 10) -> list:
-    sys = [m for m in msgs if m['role'] == 'system']
-    other = [m for m in msgs if m['role'] != 'system']
-    return sys + other[-n:]
 
 # ── SLASH COMMANDS ────────────────────────────────────────────────────────────
 @bot.tree.command(name='chat', description='Talk to the sovereign AI node')
 @app_commands.describe(message='What do you want to ask?')
 async def cmd_chat(interaction: discord.Interaction, message: str):
     await interaction.response.defer()
-    conv = get_conv(interaction.channel_id)
-    conv.append({'role': 'user', 'content': message})
-    reply = await ask_amallo(conv)
-    conv.append({'role': 'assistant', 'content': reply})
-    conv_memory[interaction.channel_id] = trim_conv(conv)
+    reply = await ask_amallo(message)
     embed = discord.Embed(description=reply, color=GREEN)
     embed.set_footer(text='amallo sovereign node · axismundi.fun')
     await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name='expect', description='Tell the bot to expect someone — they get a personal greeting')
+@app_commands.describe(name='Discord username or display name', note='What Marcus said about them (optional)')
+async def cmd_expect(interaction: discord.Interaction, name: str, note: str = ''):
+    set_expected(name, note)
+    embed = discord.Embed(
+        description=f"Got it. When **{name}** shows up, I'll know who they are." +
+                    (f"\n> *\"{note}\"*" if note else ''),
+        color=PURPLE
+    )
+    embed.set_footer(text='Stored in shared memory — persists across restarts')
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name='demo', description='Get a 33-minute live terminal demo link')
 async def cmd_demo(interaction: discord.Interaction):
@@ -330,6 +403,21 @@ async def cmd_terminal(interaction: discord.Interaction):
     embed.set_footer(text='No install. Runs in browser. Compute on the node.')
     await interaction.response.send_message(embed=embed)
 
+# ── ON MEMBER JOIN — greet expected users ────────────────────────────────────
+@bot.event
+async def on_member_join(member: discord.Member):
+    note = check_expected(member.display_name) or check_expected(member.name)
+    if note is not None:
+        system_ctx = f'Marcus told me to expect {member.display_name}. Note: "{note}". Greet them warmly and reference what Marcus said.'
+        greeting = await ask_amallo(f'{member.display_name} just joined the server.', extra_system=system_ctx)
+        # find first text channel
+        channel = discord.utils.get(member.guild.text_channels, name='general') \
+                  or next((c for c in member.guild.text_channels if c.permissions_for(member.guild.me).send_messages), None)
+        if channel:
+            embed = discord.Embed(description=greeting, color=GREEN)
+            embed.set_footer(text=f'Welcome, {member.display_name}')
+            await channel.send(embed=embed)
+
 # ── ON MESSAGE (DM or @mention) ───────────────────────────────────────────────
 @bot.event
 async def on_message(message: discord.Message):
@@ -337,7 +425,7 @@ async def on_message(message: discord.Message):
         return
     await bot.process_commands(message)
 
-    is_dm   = isinstance(message.channel, discord.DMChannel)
+    is_dm      = isinstance(message.channel, discord.DMChannel)
     is_mention = bot.user in message.mentions
 
     if not (is_dm or is_mention):
@@ -347,12 +435,12 @@ async def on_message(message: discord.Message):
     if not text:
         return
 
+    # check if this is an expected user speaking for the first time
+    note = check_expected(message.author.display_name)
+    extra = f'Marcus told me to expect {message.author.display_name}. Note: "{note}". Reference what Marcus said in your reply.' if note else ''
+
     async with message.channel.typing():
-        conv = get_conv(message.channel.id)
-        conv.append({'role': 'user', 'content': text})
-        reply = await ask_amallo(conv)
-        conv.append({'role': 'assistant', 'content': reply})
-        conv_memory[message.channel.id] = trim_conv(conv)
+        reply = await ask_amallo(f'{message.author.display_name}: {text}', extra_system=extra)
 
     embed = discord.Embed(description=reply, color=GREEN)
     embed.set_footer(text='amallo · axismundi.fun · /demo for a live terminal')
@@ -362,6 +450,11 @@ async def on_message(message: discord.Message):
 @bot.event
 async def on_ready():
     print(f'\n  ✔ Logged in as {bot.user} ({bot.user.id})')
+    # load expected users from shared memory
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, load_expected)
+    if expected_users:
+        print(f'  ✔ Expecting: {", ".join(expected_users.keys())}')
     # sync slash commands
     try:
         if GUILD_ID:
@@ -373,7 +466,7 @@ async def on_ready():
         print(f'  ✔ Synced {len(synced)} slash commands')
     except Exception as e:
         print(f'  ✗ Sync failed: {e}')
-    print(f'  ✔ Demo server: {DEMO_BASE}')
+    print(f'  ✔ Shared memory: {AMALLO_URL}/amallo/memory?id={IDENTITY}')
     print(f'  ✔ Amallo node: {AMALLO_URL}')
     cleanup_loop.start()
 

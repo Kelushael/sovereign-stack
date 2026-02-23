@@ -930,7 +930,153 @@ def cmd_vchat(args, session):
 
     return 'Usage: /vchat [start|stream|stop|log|clear]'
 
-# Register new commands in COMMANDS dict
+
+# ── /browse — AXISCHROME sovereign AI browser ─────────────────────────────────
+def cmd_browse(args, session):
+    """
+    /browse <url or search query>
+    AI sees the page, answers your task. No Google. No tracking.
+
+    Examples:
+      /browse what is the current price of bitcoin
+      /browse https://huggingface.co find the top GGUF models
+      /browse site:github.com sovereign GGUF inference server
+    """
+    import subprocess, sys
+    if not args:
+        return 'Usage: /browse <url_or_search_query> [optional task description]'
+
+    axischrome = Path(__file__).parent / 'tools' / 'axischrome.py'
+    if not axischrome.exists():
+        # try relative to sovereign-stack
+        axischrome = Path.home() / 'sovereign-stack' / 'tools' / 'axischrome.py'
+    if not axischrome.exists():
+        return '[browse] axischrome.py not found — expected at tools/axischrome.py'
+
+    query = ' '.join(args)
+    print(f'\n[axischrome] launching...\n')
+    try:
+        subprocess.run([sys.executable, str(axischrome)] + args, check=False)
+    except Exception as e:
+        return f'[browse] error: {e}'
+    return ''
+
+
+# ── /addnode — SSH into a node and add it to the sovereign mesh ──────────────
+def cmd_addnode(args, session):
+    """
+    /addnode <ip> [user]
+    SSH into a node, detect what's running, add to config.
+
+    Example:
+      /addnode 72.61.78.161
+      /addnode 72.61.78.161 root
+    """
+    import getpass, subprocess, json, urllib.request
+
+    if not args:
+        return 'Usage: /addnode <ip> [user]'
+
+    ip   = args[0]
+    user = args[1] if len(args) > 1 else 'root'
+
+    # Prompt for password exactly like SSH
+    try:
+        password = getpass.getpass(f'{user}@{ip}\'s password: ')
+    except (KeyboardInterrupt, EOFError):
+        return '\n[addnode] cancelled'
+
+    print(f'[addnode] connecting to {user}@{ip}...')
+
+    # probe via SSH: check amallo status + running models
+    probe = (
+        "curl -s --max-time 5 http://localhost:8200/amallo/status 2>/dev/null || "
+        "curl -s --max-time 5 http://localhost:11434/api/tags 2>/dev/null || "
+        "echo '{\"probe\":\"none\"}'"
+    )
+
+    try:
+        result = subprocess.run(
+            ['sshpass', '-p', password, 'ssh',
+             '-o', 'StrictHostKeyChecking=no',
+             '-o', 'ConnectTimeout=8',
+             f'{user}@{ip}', probe],
+            capture_output=True, text=True, timeout=15
+        )
+        raw = result.stdout.strip()
+    except FileNotFoundError:
+        # sshpass not installed — try paramiko
+        try:
+            import paramiko
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(ip, username=user, password=password, timeout=8)
+            _, stdout, _ = client.exec_command(probe)
+            raw = stdout.read().decode().strip()
+            client.close()
+        except ImportError:
+            return '[addnode] install sshpass or paramiko: pip install paramiko'
+        except Exception as e:
+            return f'[addnode] SSH failed: {e}'
+    except Exception as e:
+        return f'[addnode] connection error: {e}'
+
+    # parse probe response
+    models = []
+    node_type = 'unknown'
+    try:
+        data = json.loads(raw)
+        if 'models' in data:          # amallo status
+            models = [m if isinstance(m, str) else m.get('name','?') for m in data.get('models', [])]
+            node_type = 'amallo'
+        elif 'models' in data:         # ollama tags
+            models = [m.get('name','?') for m in data.get('models', [])]
+            node_type = 'ollama'
+    except Exception:
+        node_type = 'raw'
+
+    # create a SOV key on the remote node if amallo
+    new_key = None
+    if node_type == 'amallo':
+        try:
+            req = urllib.request.Request(
+                f'http://{ip}:8200/amallo/keys/create',
+                data=json.dumps({'identity': 'kelushael', 'role': 'admin'}).encode(),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            resp = json.loads(urllib.request.urlopen(req, timeout=8).read())
+            new_key = resp.get('key')
+        except Exception:
+            pass  # node may be behind nginx on 443
+
+    # add to config
+    cfg_path = Path.home() / '.config' / 'axis-mundi' / 'config.json'
+    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    nodes = cfg.get('nodes', {})
+
+    node_id = f'node-{ip.replace(".", "-")}'
+    nodes[node_id] = {
+        'ip': ip,
+        'user': user,
+        'type': node_type,
+        'models': models,
+        'key': new_key or '',
+        'added': __import__('time').strftime('%Y-%m-%dT%H:%M:%SZ')
+    }
+    cfg['nodes'] = nodes
+    cfg_path.write_text(json.dumps(cfg, indent=2))
+
+    lines = [f'[addnode] ✓ connected to {user}@{ip}']
+    lines.append(f'[addnode] type: {node_type}')
+    if models:
+        lines.append(f'[addnode] models: {", ".join(models)}')
+    if new_key:
+        lines.append(f'[addnode] key: {new_key}')
+    lines.append(f'[addnode] saved as "{node_id}" in config')
+    return '\n'.join(lines)
+
+
 _new_cmds = [
     ('/ls',       'List directory contents',       '/ls [path] [--depth N]',         cmd_ls),
     ('/cat',      'Read file contents',             '/cat <file> [--offset N] [--lines N]', cmd_cat),
@@ -948,6 +1094,8 @@ _new_cmds = [
     ('/sessions', 'List active process sessions',   '/sessions',                      cmd_sessions),
     ('/config',   'Get/set axis config',            '/config [key] [value]',          cmd_config),
     ('/vchat',    'Invisible voice chat w/ log',   '/vchat [start|stream|stop|log|clear]',  cmd_vchat),
+    ('/browse',   'AI sovereign browser',           '/browse <url or search query>',          cmd_browse),
+    ('/addnode',  'Add sovereign node to mesh',      '/addnode <ip> [user]',                   cmd_addnode),
 ]
 for _name, _desc, _usage, _fn in _new_cmds:
     COMMANDS[_name] = {'fn': _fn, 'usage': _usage, 'desc': _desc}

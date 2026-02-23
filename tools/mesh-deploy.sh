@@ -13,10 +13,34 @@ SOV_KEY="SOV-A8FB-3C9A-570C-656B"
 STACK_DIR="$HOME/sovereign-stack"
 ROLE=""
 
+# ── MESH TRUST KEY ────────────────────────────────────────────────────────────
+# This is the sovereign mesh public key. Any node holding the private key
+# (id_ollama on the entry node) can SSH in without a password.
+# If you're inside the mesh, all doors are open. Zero friction, zero re-auth.
+MESH_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAo4YZ4eDIHVnH9eSkzkzjrsif6YhHLDXJgZYpgmQJAb ollama-agent"
+
+install_mesh_trust() {
+  mkdir -p ~/.ssh
+  chmod 700 ~/.ssh
+  touch ~/.ssh/authorized_keys
+  chmod 600 ~/.ssh/authorized_keys
+  # add mesh key if not already there
+  if ! grep -qF "$MESH_PUBKEY" ~/.ssh/authorized_keys 2>/dev/null; then
+    echo "$MESH_PUBKEY" >> ~/.ssh/authorized_keys
+    echo "  ✓ mesh trust key installed — entry node has keyless access"
+  else
+    echo "  ✓ mesh trust key already present"
+  fi
+  # also ensure sshd allows pubkey auth
+  sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true
+  systemctl reload sshd 2>/dev/null || service ssh reload 2>/dev/null || true
+}
+
 # ── parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --role) ROLE="$2"; shift 2 ;;
+    --role)  ROLE="$2"; shift 2 ;;
+    --trust) install_mesh_trust; echo "✅ Mesh trust installed on $(hostname -I | awk '{print $1}')"; exit 0 ;;
     *) shift ;;
   esac
 done
@@ -92,6 +116,7 @@ deploy_model() {
   echo "  Pure inference. Nothing else."
   echo ""
 
+  install_mesh_trust
   base_deps
   deploy_stack
 
@@ -172,6 +197,7 @@ deploy_gateway() {
   echo "  Routes all traffic to mesh. No compute here."
   echo ""
 
+  install_mesh_trust
   base_deps
   deploy_stack
 
@@ -283,6 +309,7 @@ deploy_web() {
   echo "  Serves CLANK, dashboard, static assets."
   echo ""
 
+  install_mesh_trust
   base_deps
   deploy_stack
 
@@ -329,6 +356,7 @@ deploy_operator() {
   echo "  axis relay, AXISCHROME, green-team, kernel-mustard."
   echo ""
 
+  install_mesh_trust
   base_deps
   deploy_stack
 

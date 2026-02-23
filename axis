@@ -963,16 +963,58 @@ def cmd_browse(args, session):
 
 
 # ── /addnode — SSH into a node and add it to the sovereign mesh ──────────────
+def _mesh_ssh(ip, user, cmd, password=None):
+    """
+    Run cmd on remote node. Tries mesh key first (no password), then password.
+    Returns (stdout_str, method_used) or raises.
+    """
+    import subprocess, os
+    MESH_KEY = os.path.expanduser('~/.ssh/id_ollama')
+
+    # try mesh key first
+    if os.path.exists(MESH_KEY):
+        try:
+            r = subprocess.run(
+                ['ssh', '-i', MESH_KEY,
+                 '-o', 'StrictHostKeyChecking=no',
+                 '-o', 'BatchMode=yes',
+                 '-o', 'ConnectTimeout=6',
+                 f'{user}@{ip}', cmd],
+                capture_output=True, text=True, timeout=20
+            )
+            if r.returncode == 0:
+                return r.stdout.strip(), 'mesh-key'
+        except Exception:
+            pass
+
+    # try password via paramiko
+    if password:
+        try:
+            import paramiko
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(ip, username=user, password=password, timeout=8)
+            _, stdout, _ = client.exec_command(cmd)
+            out = stdout.read().decode().strip()
+            client.close()
+            return out, 'password'
+        except Exception as e:
+            raise RuntimeError(f'SSH failed: {e}')
+
+    raise RuntimeError('no mesh key access and no password provided')
+
+
 def cmd_addnode(args, session):
     """
     /addnode <ip> [user]
-    SSH into a node, detect what's running, add to config.
+    SSH into a node, detect what's running, add to mesh config.
+    Uses mesh key (id_ollama) — no password needed for mesh nodes.
 
     Example:
       /addnode 72.61.78.161
-      /addnode 72.61.78.161 root
+      /addnode 185.28.23.43 root
     """
-    import getpass, subprocess, json, urllib.request
+    import getpass, json, urllib.request
 
     if not args:
         return 'Usage: /addnode <ip> [user]'
@@ -980,58 +1022,35 @@ def cmd_addnode(args, session):
     ip   = args[0]
     user = args[1] if len(args) > 1 else 'root'
 
-    # Prompt for password exactly like SSH
-    try:
-        password = getpass.getpass(f'{user}@{ip}\'s password: ')
-    except (KeyboardInterrupt, EOFError):
-        return '\n[addnode] cancelled'
-
-    print(f'[addnode] connecting to {user}@{ip}...')
-
-    # probe via SSH: check amallo status + running models
     probe = (
         "curl -s --max-time 5 http://localhost:8200/amallo/status 2>/dev/null || "
         "curl -s --max-time 5 http://localhost:11434/api/tags 2>/dev/null || "
         "echo '{\"probe\":\"none\"}'"
     )
 
+    print(f'[addnode] connecting to {user}@{ip} (mesh key)...')
+    password = None
     try:
-        result = subprocess.run(
-            ['sshpass', '-p', password, 'ssh',
-             '-o', 'StrictHostKeyChecking=no',
-             '-o', 'ConnectTimeout=8',
-             f'{user}@{ip}', probe],
-            capture_output=True, text=True, timeout=15
-        )
-        raw = result.stdout.strip()
-    except FileNotFoundError:
-        # sshpass not installed — try paramiko
+        raw, method = _mesh_ssh(ip, user, probe)
+    except RuntimeError:
+        # fall back to password
         try:
-            import paramiko
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(ip, username=user, password=password, timeout=8)
-            _, stdout, _ = client.exec_command(probe)
-            raw = stdout.read().decode().strip()
-            client.close()
-        except ImportError:
-            return '[addnode] install sshpass or paramiko: pip install paramiko'
-        except Exception as e:
-            return f'[addnode] SSH failed: {e}'
-    except Exception as e:
-        return f'[addnode] connection error: {e}'
+            password = getpass.getpass(f'{user}@{ip}\'s password: ')
+        except (KeyboardInterrupt, EOFError):
+            return '\n[addnode] cancelled'
+        try:
+            raw, method = _mesh_ssh(ip, user, probe, password=password)
+        except RuntimeError as e:
+            return f'[addnode] failed: {e}'
 
     # parse probe response
     models = []
     node_type = 'unknown'
     try:
         data = json.loads(raw)
-        if 'models' in data:          # amallo status
+        if 'models' in data:
             models = [m if isinstance(m, str) else m.get('name','?') for m in data.get('models', [])]
-            node_type = 'amallo'
-        elif 'models' in data:         # ollama tags
-            models = [m.get('name','?') for m in data.get('models', [])]
-            node_type = 'ollama'
+            node_type = 'amallo' if data.get('sovereign') else 'ollama'
     except Exception:
         node_type = 'raw'
 
@@ -1048,33 +1067,75 @@ def cmd_addnode(args, session):
             resp = json.loads(urllib.request.urlopen(req, timeout=8).read())
             new_key = resp.get('key')
         except Exception:
-            pass  # node may be behind nginx on 443
+            pass
 
     # add to config
     cfg_path = Path.home() / '.config' / 'axis-mundi' / 'config.json'
     cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     nodes = cfg.get('nodes', {})
-
     node_id = f'node-{ip.replace(".", "-")}'
     nodes[node_id] = {
-        'ip': ip,
-        'user': user,
-        'type': node_type,
-        'models': models,
-        'key': new_key or '',
-        'added': __import__('time').strftime('%Y-%m-%dT%H:%M:%SZ')
+        'ip': ip, 'user': user, 'type': node_type,
+        'models': models, 'key': new_key or '',
+        'added': __import__('time').strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'access': method
     }
     cfg['nodes'] = nodes
     cfg_path.write_text(json.dumps(cfg, indent=2))
 
-    lines = [f'[addnode] ✓ connected to {user}@{ip}']
+    lines = [f'[addnode] ✓ {user}@{ip} ({method})']
     lines.append(f'[addnode] type: {node_type}')
-    if models:
-        lines.append(f'[addnode] models: {", ".join(models)}')
-    if new_key:
-        lines.append(f'[addnode] key: {new_key}')
-    lines.append(f'[addnode] saved as "{node_id}" in config')
+    if models: lines.append(f'[addnode] models: {", ".join(models)}')
+    if new_key: lines.append(f'[addnode] key: {new_key}')
+    lines.append(f'[addnode] saved as "{node_id}"')
     return '\n'.join(lines)
+
+
+def cmd_mesh_ssh(args, session):
+    """
+    /ssh <node_id_or_ip> [command]
+    Drop into any mesh node or run a single command on it.
+    No password — mesh key handles it.
+
+    Examples:
+      /ssh model               — interactive shell on model node
+      /ssh 185.28.23.43        — interactive shell on web node
+      /ssh operator "git pull ~/sovereign-stack"
+    """
+    import os, subprocess
+
+    NODE_IPS = {
+        'gateway':  '76.13.24.113',
+        'model':    '187.77.208.28',
+        'web':      '185.28.23.43',
+        'operator': '72.61.78.161',
+    }
+
+    if not args:
+        lines = ['Usage: /ssh <node> [command]', '',
+                 'Nodes: ' + '  '.join(f'{k}({v})' for k,v in NODE_IPS.items())]
+        return '\n'.join(lines)
+
+    target = args[0]
+    ip = NODE_IPS.get(target, target)
+    remote_cmd = ' '.join(args[1:]) if len(args) > 1 else None
+
+    MESH_KEY = os.path.expanduser('~/.ssh/id_ollama')
+    ssh_base = ['ssh', '-i', MESH_KEY,
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'ConnectTimeout=8',
+                f'root@{ip}']
+
+    if remote_cmd:
+        try:
+            out, _ = _mesh_ssh(ip, 'root', remote_cmd)
+            return out or '(no output)'
+        except RuntimeError as e:
+            return f'[ssh] {e}'
+    else:
+        # interactive — exec replaces process
+        print(f'[ssh] → {ip} (mesh key)')
+        os.execv('/usr/bin/ssh', ssh_base)
 
 
 def cmd_mesh(args, session):
@@ -1148,6 +1209,10 @@ def cmd_mesh(args, session):
     lines.append(f'  Inference → https://axismundi.fun/v1/chat/completions')
     lines.append(f'  CLANK UI  → http://185.28.23.43/clank')
     lines.append(f'  Deploy    → curl https://axismundi.fun/mesh-deploy.sh | bash -s -- --role <role>')
+    lines.append(f'')
+    lines.append(f'  Quick access (keyless):')
+    for nid, info in MESH_NODES.items():
+        lines.append(f'    /ssh {nid:<10}  →  root@{info["ip"]}')
     lines.append('')
     return '\n'.join(lines)
 
@@ -1171,6 +1236,7 @@ _new_cmds = [
     ('/vchat',    'Invisible voice chat w/ log',   '/vchat [start|stream|stop|log|clear]',  cmd_vchat),
     ('/browse',   'AI sovereign browser',           '/browse <url or search query>',          cmd_browse),
     ('/addnode',  'Add sovereign node to mesh',      '/addnode <ip> [user]',                   cmd_addnode),
+    ('/ssh',      'SSH into any mesh node (keyless)', '/ssh <node|ip> [command]',               cmd_mesh_ssh),
     ('/mesh',     'Sovereign mesh status + deploy',  '/mesh [status|nodes]',                   cmd_mesh),
 ]
 for _name, _desc, _usage, _fn in _new_cmds:

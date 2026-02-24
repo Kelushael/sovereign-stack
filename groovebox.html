@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GROOVEBOX</title>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07070f;--surface:#0d0d1a;--border:#1a1a30;
+  --c:#00ffff;--m:#ff00ff;--g:#39ff14;
+  --text:#c8c8e8;--dim:#404060;--fnt:'Courier New',monospace
+}
+html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-family:var(--fnt);overflow:hidden;user-select:none}
+#app{display:grid;grid-template-rows:50px 1fr 56px;height:100vh}
+
+/* HEADER */
+#hdr{display:flex;align-items:center;justify-content:space-between;padding:0 18px;background:var(--surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0;z-index:10}
+.logo{font-size:15px;font-weight:900;letter-spacing:8px;background:linear-gradient(90deg,var(--c),var(--m));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;white-space:nowrap}
+.hdr-mid{display:flex;align-items:center;gap:24px;flex:1;justify-content:center}
+.bpm-wrap{display:flex;align-items:baseline;gap:5px}
+#bpm-val{font-size:30px;font-weight:bold;color:var(--c);text-shadow:0 0 12px var(--c);min-width:56px;text-align:right;line-height:1;transition:color .1s}
+.lbl{font-size:9px;color:var(--dim);letter-spacing:3px;text-transform:uppercase}
+#loop-ind{display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:2px}
+#loop-dot{width:9px;height:9px;border-radius:50%;background:var(--dim);transition:all .1s;flex-shrink:0}
+#loop-dot.rec{background:#f00;box-shadow:0 0 10px #f00;animation:blink .4s infinite alternate}
+#loop-dot.play{background:var(--g);box-shadow:0 0 10px var(--g)}
+#loop-lbl{font-size:10px;letter-spacing:2px;color:var(--dim);transition:color .1s;min-width:40px}
+@keyframes blink{to{opacity:.15}}
+.hdr-hint{font-size:8px;color:var(--dim);letter-spacing:1px;white-space:nowrap;line-height:1.6;text-align:right}
+
+/* MAIN */
+#main{display:grid;grid-template-columns:1fr 262px;overflow:hidden;min-height:0}
+
+/* CAMERA */
+#cam-wrap{position:relative;background:#000;overflow:hidden}
+#vid{position:absolute;opacity:0;width:100%;height:100%;object-fit:cover}
+#canvas{position:absolute;top:0;left:0;width:100%;height:100%;cursor:crosshair;touch-action:none}
+#cam-msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;color:var(--dim);font-size:12px;letter-spacing:2px;line-height:2;transition:opacity .3s}
+
+/* SIDE PANEL */
+#side{background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.sec{padding:11px 14px;border-bottom:1px solid var(--border);flex-shrink:0}
+.sec-last{flex:1;overflow-y:auto;min-height:0}
+.sec-t{font-size:8px;letter-spacing:3px;color:var(--dim);margin-bottom:8px;text-transform:uppercase}
+
+/* BUTTONS */
+.btn{background:transparent;border:1px solid var(--border);color:var(--text);font-family:var(--fnt);font-size:10px;letter-spacing:2px;padding:7px 12px;cursor:pointer;transition:all .12s;border-radius:1px;width:100%;text-align:center;text-transform:uppercase;display:block}
+.btn:hover{border-color:var(--c);color:var(--c);box-shadow:0 0 8px rgba(0,255,255,.15)}
+.btn:active{background:rgba(0,255,255,.08)}
+.btn.rec{border-color:#f00;color:#f00;animation:blink .4s infinite alternate}
+.btn.play{border-color:var(--g);color:var(--g)}
+.btn-row{display:flex;gap:6px;margin-top:6px}
+.btn-row .btn{font-size:9px;padding:5px 8px}
+
+/* PAD GRID (side) */
+.pgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+.pad{aspect-ratio:1;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:2px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-family:var(--fnt);font-size:7px;letter-spacing:.5px;color:var(--dim);padding:3px;transition:all .08s;-webkit-tap-highlight-color:transparent}
+.pad:hover{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.2)}
+.pad .icon{font-size:13px;line-height:1.2;pointer-events:none}
+.pad .pname{font-size:7px;white-space:nowrap;pointer-events:none}
+.pad .pkey{font-size:6px;opacity:.4;pointer-events:none}
+.pad.lit{transform:scale(.93)}
+
+/* HAND STATUS */
+#hand-stat{font-size:9px;color:var(--dim);letter-spacing:1px;line-height:1.7}
+
+/* FOOTER */
+#ftr{background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:14px;overflow:hidden;flex-shrink:0}
+#viz{flex:1;height:38px;min-width:0}
+.fbtns{display:flex;gap:8px;flex-shrink:0}
+.fbtn{background:transparent;border:1px solid var(--border);color:var(--dim);font-family:var(--fnt);font-size:9px;letter-spacing:1px;padding:5px 10px;cursor:pointer;transition:all .12s;border-radius:1px;white-space:nowrap}
+.fbtn:hover{border-color:var(--c);color:var(--c)}
+.fbtn.on{border-color:var(--g);color:var(--g)}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:3px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- HEADER -->
+  <div id="hdr">
+    <div class="logo">GROOVEBOX</div>
+    <div class="hdr-mid">
+      <div class="bpm-wrap">
+        <span id="bpm-val">120</span>
+        <span class="lbl">BPM</span>
+      </div>
+      <div id="loop-ind">
+        <div id="loop-dot"></div>
+        <span id="loop-lbl">IDLE</span>
+      </div>
+    </div>
+    <div class="hdr-hint">SPACE=LOOP&nbsp;&nbsp;Q–C=KEYS<br>CLICK ZONES OR PADS</div>
+  </div>
+
+  <!-- MAIN -->
+  <div id="main">
+
+    <!-- CAMERA -->
+    <div id="cam-wrap">
+      <video id="vid" autoplay muted playsinline></video>
+      <canvas id="canvas"></canvas>
+      <div id="cam-msg">▲ LOADING MEDIAPIPE HANDS...<br><span style="font-size:10px;opacity:.6">camera permission required</span></div>
+    </div>
+
+    <!-- SIDE PANEL -->
+    <div id="side">
+      <div class="sec">
+        <div class="sec-t">Tempo</div>
+        <button class="btn" id="tap-btn">TAP TEMPO</button>
+        <div style="margin-top:6px;font-size:8px;color:var(--dim);text-align:center;letter-spacing:1px">tap 3+ times · current: <span id="bpm-small">120</span> bpm</div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-t">Loop</div>
+        <button class="btn" id="loop-btn">⏺ REC LOOP</button>
+        <div class="btn-row">
+          <button class="btn" id="clear-btn">✕ CLEAR</button>
+          <button class="btn" id="metro-btn">♩ METRO</button>
+        </div>
+        <div style="margin-top:6px;font-size:8px;color:var(--dim);letter-spacing:1px;text-align:center" id="loop-info">—</div>
+      </div>
+
+      <div class="sec sec-last">
+        <div class="sec-t">Pads</div>
+        <div class="pgrid" id="pgrid"></div>
+        <div style="margin-top:12px">
+          <div class="sec-t">Hands</div>
+          <div id="hand-stat">No hands detected</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- FOOTER -->
+  <div id="ftr">
+    <canvas id="viz"></canvas>
+    <div class="fbtns">
+      <button class="fbtn" id="cam-btn">📷 CAMERA</button>
+    </div>
+  </div>
+
+</div>
+<script>
+// ════════════════════════════════════════════════
+// AUDIO ENGINE
+// ════════════════════════════════════════════════
+let AC, analyser, masterGain;
+
+function initAC() {
+  if (AC) { if (AC.state === 'suspended') AC.resume(); return; }
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = AC.createAnalyser();
+  analyser.fftSize = 512;
+  masterGain = AC.createGain();
+  masterGain.gain.value = 0.85;
+  masterGain.connect(analyser);
+  analyser.connect(AC.destination);
+}
+
+function dst() { return masterGain; }
+
+function mkNoise(dur) {
+  const len = Math.ceil(AC.sampleRate * dur);
+  const buf = AC.createBuffer(1, len, AC.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  const s = AC.createBufferSource();
+  s.buffer = buf;
+  return s;
+}
+
+function kick(t) {
+  t = t || AC.currentTime;
+  const o = AC.createOscillator(), g = AC.createGain();
+  const dist = AC.createWaveShaper();
+  const c = new Float32Array(256);
+  for (let i = 0; i < 256; i++) { const x = i/128-1; c[i] = x/(1 + 6*Math.abs(x)); }
+  dist.curve = c;
+  o.frequency.setValueAtTime(150, t);
+  o.frequency.exponentialRampToValueAtTime(38, t + 0.4);
+  g.gain.setValueAtTime(2.2, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+  o.connect(dist); dist.connect(g); g.connect(dst());
+  o.start(t); o.stop(t + 0.55);
+}
+
+function snare(t) {
+  t = t || AC.currentTime;
+  const n = mkNoise(0.22), nf = AC.createBiquadFilter(), ng = AC.createGain();
+  nf.type = 'bandpass'; nf.frequency.value = 3200; nf.Q.value = 0.5;
+  ng.gain.setValueAtTime(1.6, t);
+  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+  n.connect(nf); nf.connect(ng); ng.connect(dst());
+  n.start(t); n.stop(t + 0.25);
+  const o = AC.createOscillator(), og = AC.createGain();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(210, t);
+  o.frequency.exponentialRampToValueAtTime(110, t + 0.09);
+  og.gain.setValueAtTime(1.0, t);
+  og.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+  o.connect(og); og.connect(dst());
+  o.start(t); o.stop(t + 0.15);
+}
+
+function clap(t) {
+  t = t || AC.currentTime;
+  [0, 0.011, 0.022].forEach((d, i) => {
+    const n = mkNoise(0.1), f = AC.createBiquadFilter(), g = AC.createGain();
+    f.type = 'bandpass'; f.frequency.value = 1300; f.Q.value = 0.8;
+    g.gain.setValueAtTime(i === 2 ? 1.4 : 0.9, t + d);
+    g.gain.exponentialRampToValueAtTime(0.001, t + d + 0.1);
+    n.connect(f); f.connect(g); g.connect(dst());
+    n.start(t + d); n.stop(t + d + 0.12);
+  });
+}
+
+function hhClosed(t) {
+  t = t || AC.currentTime;
+  const n = mkNoise(0.055), f = AC.createBiquadFilter(), g = AC.createGain();
+  f.type = 'highpass'; f.frequency.value = 9500;
+  g.gain.setValueAtTime(0.95, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.055);
+  n.connect(f); f.connect(g); g.connect(dst());
+  n.start(t); n.stop(t + 0.07);
+}
+
+function hhOpen(t) {
+  t = t || AC.currentTime;
+  const n = mkNoise(0.42), f = AC.createBiquadFilter(), g = AC.createGain();
+  f.type = 'highpass'; f.frequency.value = 7000;
+  g.gain.setValueAtTime(0.75, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.42);
+  n.connect(f); f.connect(g); g.connect(dst());
+  n.start(t); n.stop(t + 0.45);
+}
+
+function tom(t) {
+  t = t || AC.currentTime;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.frequency.setValueAtTime(115, t);
+  o.frequency.exponentialRampToValueAtTime(52, t + 0.38);
+  g.gain.setValueAtTime(1.4, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.48);
+  o.connect(g); g.connect(dst());
+  o.start(t); o.stop(t + 0.52);
+}
+
+function ride(t) {
+  t = t || AC.currentTime;
+  const n = mkNoise(0.65), f = AC.createBiquadFilter(), g = AC.createGain();
+  f.type = 'bandpass'; f.frequency.value = 5500; f.Q.value = 2.5;
+  g.gain.setValueAtTime(0.6, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.65);
+  n.connect(f); f.connect(g); g.connect(dst());
+  n.start(t); n.stop(t + 0.7);
+}
+
+function synthNote(freq, t) {
+  t = t || AC.currentTime;
+  const o1 = AC.createOscillator(), o2 = AC.createOscillator();
+  const flt = AC.createBiquadFilter(), g = AC.createGain();
+  o1.type = 'sawtooth'; o2.type = 'square';
+  o1.frequency.value = freq; o2.frequency.value = freq * 1.004;
+  flt.type = 'lowpass';
+  flt.frequency.setValueAtTime(freq * 9, t);
+  flt.frequency.exponentialRampToValueAtTime(freq * 1.2, t + 0.55);
+  flt.Q.value = 6;
+  g.gain.setValueAtTime(0.62, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.58);
+  o1.connect(flt); o2.connect(flt); flt.connect(g); g.connect(dst());
+  o1.start(t); o2.start(t); o1.stop(t + 0.6); o2.stop(t + 0.6);
+}
+
+function bassNote(freq, t) {
+  t = t || AC.currentTime;
+  const o = AC.createOscillator(), flt = AC.createBiquadFilter(), g = AC.createGain();
+  o.type = 'sawtooth'; o.frequency.value = freq;
+  flt.type = 'lowpass'; flt.frequency.value = freq * 4; flt.Q.value = 5;
+  g.gain.setValueAtTime(1.1, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+  o.connect(flt); flt.connect(g); g.connect(dst());
+  o.start(t); o.stop(t + 0.55);
+}
+
+// ════════════════════════════════════════════════
+// PAD DEFINITIONS  (3×3 grid, row-major: TL→BR)
+// ════════════════════════════════════════════════
+const PADS = [
+  { id:0, name:'CLAP',   icon:'👐', key:'Q', color:'#ff6b6b', fn: t=>clap(t) },
+  { id:1, name:'HH OPN', icon:'🔆', key:'W', color:'#ffd93d', fn: t=>hhOpen(t) },
+  { id:2, name:'HH CL',  icon:'✦',  key:'E', color:'#6bcb77', fn: t=>hhClosed(t) },
+  { id:3, name:'SYNTH',  icon:'◈',  key:'A', color:'#4d96ff', fn: t=>synthNote(440,t) },
+  { id:4, name:'SNARE',  icon:'◎',  key:'S', color:'#ff44ff', fn: t=>snare(t) },
+  { id:5, name:'TOM',    icon:'◉',  key:'D', color:'#ff9f43', fn: t=>tom(t) },
+  { id:6, name:'KICK',   icon:'◆',  key:'Z', color:'#00d2d3', fn: t=>kick(t) },
+  { id:7, name:'BASS',   icon:'♫',  key:'X', color:'#a29bfe', fn: t=>bassNote(110,t) },
+  { id:8, name:'RIDE',   icon:'⊕',  key:'C', color:'#fd79a8', fn: t=>ride(t) },
+];
+
+const KEY_MAP = {};
+PADS.forEach(p => { KEY_MAP[p.key] = p.id; });
+
+let flashTimers = new Array(9).fill(null);
+let zoneFlash   = new Array(9).fill(0);
+
+function triggerPad(id, when) {
+  initAC();
+  if (id < 0 || id >= PADS.length) return;
+  const t = when || null;
+  PADS[id].fn(t);
+  // visual flash
+  const delay = (when && AC) ? Math.max(0, (when - AC.currentTime) * 1000) : 0;
+  setTimeout(() => flashNow(id), delay);
+  // record
+  if (isRecording && !when) {
+    loopEvents.push({ id, t: AC.currentTime - recStart });
+  }
+}
+
+function flashNow(id) {
+  zoneFlash[id] = Date.now();
+  const el = document.getElementById('p' + id);
+  if (el) {
+    el.classList.add('lit');
+    clearTimeout(flashTimers[id]);
+    flashTimers[id] = setTimeout(() => el.classList.remove('lit'), 160);
+  }
+}
+
+// ════════════════════════════════════════════════
+// LOOP PEDAL
+// ════════════════════════════════════════════════
+let isRecording = false, isLooping = false;
+let loopEvents = [], recStart = 0, loopLen = 0;
+let loopTimer = null;
+
+function toggleLoop() {
+  initAC();
+  if (!isRecording && !isLooping) {
+    isRecording = true;
+    loopEvents = [];
+    recStart = AC.currentTime;
+    setLoopInfo('recording...');
+  } else if (isRecording) {
+    isRecording = false;
+    loopLen = AC.currentTime - recStart;
+    if (loopLen > 0.1 && loopEvents.length > 0) {
+      isLooping = true;
+      startLoop();
+      setLoopInfo(loopEvents.length + ' events · ' + loopLen.toFixed(2) + 's');
+    } else {
+      setLoopInfo('—');
+    }
+  } else if (isLooping) {
+    stopLoop();
+    setLoopInfo(loopEvents.length + ' events · ' + loopLen.toFixed(2) + 's');
+  }
+  updateLoopUI();
+}
+
+function clearLoop() {
+  isRecording = false; isLooping = false;
+  if (loopTimer) clearTimeout(loopTimer);
+  loopTimer = null; loopEvents = [];
+  setLoopInfo('—');
+  updateLoopUI();
+}
+
+function startLoop() {
+  if (loopTimer) clearTimeout(loopTimer);
+  const play = () => {
+    if (!isLooping) return;
+    const now = AC.currentTime;
+    loopEvents.forEach(ev => {
+      const t = now + ev.t;
+      PADS[ev.id].fn(t);
+      const d = Math.max(0, (t - AC.currentTime) * 1000);
+      setTimeout(() => flashNow(ev.id), d);
+    });
+    loopTimer = setTimeout(play, loopLen * 1000);
+  };
+  play();
+}
+
+function stopLoop() {
+  isLooping = false;
+  if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }
+}
+
+function setLoopInfo(msg) {
+  document.getElementById('loop-info').textContent = msg;
+}
+
+function updateLoopUI() {
+  const dot = document.getElementById('loop-dot');
+  const lbl = document.getElementById('loop-lbl');
+  const btn = document.getElementById('loop-btn');
+  if (isRecording) {
+    dot.className = 'rec'; lbl.textContent = 'REC'; lbl.style.color = '#f00';
+    btn.textContent = '⏹ STOP REC'; btn.className = 'btn rec';
+  } else if (isLooping) {
+    dot.className = 'play'; lbl.textContent = 'LOOP'; lbl.style.color = '#39ff14';
+    btn.textContent = '⏹ STOP LOOP'; btn.className = 'btn play';
+  } else {
+    dot.className = ''; lbl.textContent = 'IDLE'; lbl.style.color = '';
+    btn.textContent = '⏺ REC LOOP'; btn.className = 'btn';
+  }
+}
+
+// ════════════════════════════════════════════════
+// TAP TEMPO + METRONOME
+// ════════════════════════════════════════════════
+let taps = [], bpm = 120;
+let metroOn = false, metroTimer = null, metroCount = 0, lastMetroT = 0;
+
+function tapTempo() {
+  initAC();
+  const now = Date.now();
+  if (taps.length && now - taps[taps.length-1] > 2500) taps = [];
+  taps.push(now);
+  if (taps.length > 8) taps.shift();
+  if (taps.length >= 2) {
+    const ivs = [];
+    for (let i = 1; i < taps.length; i++) ivs.push(taps[i]-taps[i-1]);
+    const avg = ivs.reduce((a,b) => a+b) / ivs.length;
+    bpm = Math.max(40, Math.min(300, Math.round(60000 / avg)));
+    document.getElementById('bpm-val').textContent = bpm;
+    document.getElementById('bpm-small').textContent = bpm;
+    // flash BPM
+    const v = document.getElementById('bpm-val');
+    v.style.color = '#fff'; setTimeout(() => v.style.color = '', 80);
+  }
+}
+
+function metroClick(t, accent) {
+  if (!AC) return;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.frequency.value = accent ? 1400 : 900;
+  g.gain.setValueAtTime(accent ? 0.45 : 0.28, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+  o.connect(g); g.connect(dst());
+  o.start(t); o.stop(t + 0.04);
+}
+
+function scheduleMetro() {
+  if (!metroOn || !AC) return;
+  const interval = 60 / bpm;
+  const now = AC.currentTime;
+  if (now - lastMetroT >= interval - 0.01) {
+    metroClick(now, metroCount % 4 === 0);
+    metroCount++; lastMetroT = now;
+  }
+  metroTimer = setTimeout(scheduleMetro, 8);
+}
+
+function toggleMetro() {
+  metroOn = !metroOn;
+  const btn = document.getElementById('metro-btn');
+  if (metroOn) {
+    initAC(); metroCount = 0; lastMetroT = 0;
+    scheduleMetro();
+    btn.textContent = '♩ METRO ON'; btn.style.borderColor = '#ffd93d'; btn.style.color = '#ffd93d';
+  } else {
+    if (metroTimer) clearTimeout(metroTimer);
+    btn.textContent = '♩ METRO'; btn.style.borderColor = ''; btn.style.color = '';
+  }
+}
+
+// ════════════════════════════════════════════════
+// CANVAS & RENDERING
+// ════════════════════════════════════════════════
+const vid    = document.getElementById('vid');
+const canvas = document.getElementById('canvas');
+const cx     = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const w = document.getElementById('cam-wrap');
+  canvas.width  = w.clientWidth;
+  canvas.height = w.clientHeight;
+}
+new ResizeObserver(resizeCanvas).observe(document.getElementById('cam-wrap'));
+resizeCanvas();
+
+function h2r(hex, a) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+const CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[19,20],[17,0]
+];
+
+function drawScene(results) {
+  const W = canvas.width, H = canvas.height;
+  cx.clearRect(0, 0, W, H);
+
+  // ── video frame (mirrored)
+  if (results && results.image) {
+    cx.save();
+    cx.scale(-1, 1);
+    cx.drawImage(results.image, -W, 0, W, H);
+    cx.restore();
+  } else {
+    // background with subtle dot grid
+    cx.fillStyle = '#07070f';
+    cx.fillRect(0, 0, W, H);
+    cx.fillStyle = 'rgba(255,255,255,0.025)';
+    for (let x = 30; x < W; x += 48)
+      for (let y = 30; y < H; y += 48)
+        cx.fillRect(x, y, 1.5, 1.5);
+  }
+
+  // ── zone grid overlay
+  const cW = W / 3, cH = H / 3;
+  const now = Date.now();
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      const id  = row * 3 + col;
+      const pad = PADS[id];
+      const px  = col * cW, py = row * cH;
+      const age = now - zoneFlash[id];
+      const fl  = age < 220 ? Math.pow(1 - age / 220, 1.6) : 0;
+
+      cx.fillStyle = h2r(pad.color, 0.04 + fl * 0.38);
+      cx.fillRect(px, py, cW, cH);
+
+      if (fl > 0) {
+        const grad = cx.createRadialGradient(px+cW/2, py+cH/2, 0, px+cW/2, py+cH/2, Math.max(cW,cH)*0.7);
+        grad.addColorStop(0, h2r(pad.color, fl * 0.25));
+        grad.addColorStop(1, h2r(pad.color, 0));
+        cx.fillStyle = grad;
+        cx.fillRect(px, py, cW, cH);
+      }
+
+      cx.strokeStyle = h2r(pad.color, 0.14 + fl * 0.72);
+      cx.lineWidth = fl > 0 ? 1.8 : 0.8;
+      cx.strokeRect(px + 0.5, py + 0.5, cW - 1, cH - 1);
+
+      const fs = Math.min(12, cW / 11);
+      cx.fillStyle = h2r(pad.color, 0.55 + fl * 0.45);
+      cx.font = `bold ${fs}px 'Courier New'`;
+      cx.textAlign = 'left';
+      cx.fillText(pad.name, px + 8, py + 18);
+
+      cx.fillStyle = h2r('#ffffff', 0.18 + fl * 0.22);
+      cx.font = `${Math.min(9, cW/14)}px 'Courier New'`;
+      cx.fillText('[' + pad.key + ']', px + 8, py + cH - 9);
+    }
+  }
+
+  // ── hand skeletons + zone cursors
+  if (results && results.multiHandLandmarks) {
+    results.multiHandLandmarks.forEach((lms, hi) => drawHand(lms, W, H, hi));
+  }
+}
+
+function drawHand(lms, W, H, hi) {
+  const col = hi === 0 ? '#00ffff' : '#ff00ff';
+  // skeleton
+  cx.strokeStyle = h2r(col, 0.55);
+  cx.lineWidth = 1.8;
+  CONNECTIONS.forEach(([a, b]) => {
+    if (!lms[a] || !lms[b]) return;
+    cx.beginPath();
+    cx.moveTo((1 - lms[a].x) * W, lms[a].y * H);
+    cx.lineTo((1 - lms[b].x) * W, lms[b].y * H);
+    cx.stroke();
+  });
+  // joints
+  lms.forEach((lm, i) => {
+    const tip = [4,8,12,16,20].includes(i);
+    cx.beginPath();
+    cx.arc((1 - lm.x) * W, lm.y * H, tip ? 5.5 : 2.8, 0, Math.PI * 2);
+    cx.fillStyle = tip ? col : h2r(col, 0.5);
+    cx.fill();
+  });
+  // palm-centre cursor ring
+  const wx = (1 - lms[0].x) * W, wy = lms[0].y * H;
+  const mx = (1 - lms[9].x) * W, my = lms[9].y * H;
+  const pcx = (wx + mx) / 2, pcy = (wy + my) / 2;
+  cx.beginPath();
+  cx.arc(pcx, pcy, 18, 0, Math.PI * 2);
+  cx.strokeStyle = col;
+  cx.lineWidth = 1.5;
+  cx.setLineDash([4, 5]);
+  cx.stroke();
+  cx.setLineDash([]);
+  // zone label next to cursor
+  const zone = getZone((pcx / W), (pcy / H));
+  if (zone >= 0 && zone < PADS.length) {
+    cx.fillStyle = col;
+    cx.font = `bold 9px 'Courier New'`;
+    cx.textAlign = 'left';
+    cx.fillText('▸ ' + PADS[zone].name, pcx + 22, pcy + 4);
+  }
+}
+
+// ════════════════════════════════════════════════
+// HAND TRACKING — ZONE DETECTION
+// ════════════════════════════════════════════════
+let handZone = [-1, -1], handZoneT = [0, 0];
+const COOLDOWN = 320; // ms between triggers per hand
+
+function getZone(nx, ny) {
+  // nx, ny normalised [0,1]; grid is 3×3
+  const c = Math.min(2, Math.floor(nx * 3));
+  const r = Math.min(2, Math.floor(ny * 3));
+  return r * 3 + c;
+}
+
+function processHand(lms, hi) {
+  const mirX = 1 - (lms[0].x + lms[9].x) / 2;
+  const avgY =     (lms[0].y + lms[9].y) / 2;
+  const zone = getZone(mirX, avgY);
+  const now  = Date.now();
+  if (zone !== handZone[hi] && (now - handZoneT[hi]) > COOLDOWN) {
+    handZone[hi] = zone;
+    handZoneT[hi] = now;
+    triggerPad(zone);
+  }
+}
+
+// ════════════════════════════════════════════════
+// MEDIAPIPE + CAMERA
+// ════════════════════════════════════════════════
+let mpHands = null, camActive = false, processing = false;
+
+async function startCamera() {
+  setMsg('REQUESTING CAMERA...');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
+    });
+    vid.srcObject = stream;
+    await new Promise(r => { vid.onloadedmetadata = r; });
+    await vid.play();
+    camActive = true;
+    document.getElementById('cam-btn').textContent = '📷 ON';
+    document.getElementById('cam-btn').classList.add('on');
+    setMsg('LOADING AI MODEL...');
+    initMPHands();
+  } catch (err) {
+    setMsg('CAMERA DENIED\n\nClick pads or use keys Q–C to play');
+    // still render static grid
+    requestAnimationFrame(function loop() { drawScene(null); requestAnimationFrame(loop); });
+  }
+}
+
+function initMPHands() {
+  mpHands = new Hands({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+  });
+  mpHands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.68,
+    minTrackingConfidence: 0.5
+  });
+  mpHands.onResults(onResults);
+  // prime the model
+  mpHands.initialize().then(() => {
+    hideMsg();
+    requestAnimationFrame(captureLoop);
+  }).catch(() => {
+    setMsg('HAND TRACKING UNAVAILABLE\nCamera feed active · click zones to play');
+    requestAnimationFrame(captureLoop);
+  });
+}
+
+function onResults(results) {
+  processing = false;
+  drawScene(results);
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length) {
+    const n = results.multiHandLandmarks.length;
+    document.getElementById('hand-stat').textContent =
+      n + ' hand' + (n > 1 ? 's' : '') + ' detected';
+    results.multiHandLandmarks.forEach((lms, hi) => processHand(lms, hi));
+  } else {
+    document.getElementById('hand-stat').textContent = 'No hands detected';
+    handZone = [-1, -1];
+  }
+}
+
+async function captureLoop() {
+  if (!processing && camActive && vid.readyState >= 2) {
+    processing = true;
+    try { await mpHands.send({ image: vid }); }
+    catch (e) { processing = false; drawScene(null); }
+  }
+  requestAnimationFrame(captureLoop);
+}
+
+function setMsg(txt) {
+  const el = document.getElementById('cam-msg');
+  el.style.display = '';
+  el.innerHTML = txt.replace(/\n/g, '<br>');
+}
+function hideMsg() {
+  document.getElementById('cam-msg').style.display = 'none';
+}
+
+// ════════════════════════════════════════════════
+// AUDIO VISUALISER
+// ════════════════════════════════════════════════
+const vizCv  = document.getElementById('viz');
+const vizCtx = vizCv.getContext('2d');
+
+function drawViz() {
+  vizCv.width  = vizCv.clientWidth;
+  vizCv.height = vizCv.clientHeight;
+  const W = vizCv.width, H = vizCv.height;
+  vizCtx.clearRect(0, 0, W, H);
+
+  if (analyser) {
+    const bins = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(bins);
+    const bw = W / bins.length * 2.5;
+    let x = 0;
+    for (let i = 0; i < bins.length; i++) {
+      const bh  = (bins[i] / 255) * H;
+      const hue = (i / bins.length) * 180 + 170;
+      vizCtx.fillStyle = `hsla(${hue},100%,55%,0.85)`;
+      vizCtx.fillRect(x, H - bh, Math.max(1, bw - 1), bh);
+      x += bw;
+    }
+  } else {
+    // idle scan line
+    const t = Date.now() / 800;
+    const gx = vizCtx.createLinearGradient(0, 0, W, 0);
+    gx.addColorStop(0, 'transparent');
+    gx.addColorStop((Math.sin(t) + 1) / 2, 'rgba(0,255,255,0.2)');
+    gx.addColorStop(1, 'transparent');
+    vizCtx.fillStyle = gx;
+    vizCtx.fillRect(0, H/2-1, W, 2);
+  }
+  requestAnimationFrame(drawViz);
+}
+drawViz();
+
+// ════════════════════════════════════════════════
+// CANVAS CLICK / TOUCH  →  trigger zone
+// ════════════════════════════════════════════════
+function canvasHit(e) {
+  e.preventDefault();
+  initAC();
+  const rect = canvas.getBoundingClientRect();
+  const src  = e.touches ? e.touches[0] : e;
+  const nx   = (src.clientX - rect.left)  / rect.width;
+  const ny   = (src.clientY - rect.top)   / rect.height;
+  triggerPad(getZone(nx, ny));
+}
+canvas.addEventListener('click',      canvasHit);
+canvas.addEventListener('touchstart', canvasHit, { passive: false });
+
+// ════════════════════════════════════════════════
+// KEYBOARD
+// ════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (e.code === 'Space') { e.preventDefault(); toggleLoop(); return; }
+  const id = KEY_MAP[e.key.toUpperCase()];
+  if (id !== undefined) { initAC(); triggerPad(id); }
+});
+
+// ════════════════════════════════════════════════
+// BUILD SIDE PAD BUTTONS
+// ════════════════════════════════════════════════
+(function buildPads() {
+  const grid = document.getElementById('pgrid');
+  // inject active-state CSS
+  const sty = document.createElement('style');
+  sty.textContent = PADS.map(p =>
+    `#p${p.id}.lit{background:${h2r(p.color,0.22)};border-color:${p.color};` +
+    `box-shadow:0 0 10px ${h2r(p.color,0.5)},inset 0 0 6px ${h2r(p.color,0.15)};color:${p.color}}`
+  ).join('');
+  document.head.appendChild(sty);
+
+  PADS.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'pad';
+    btn.id = 'p' + p.id;
+    btn.style.borderColor = h2r(p.color, 0.28);
+    btn.innerHTML =
+      `<span class="icon">${p.icon}</span>` +
+      `<span class="pname">${p.name}</span>` +
+      `<span class="pkey">[${p.key}]</span>`;
+    btn.addEventListener('mousedown', ev => { ev.preventDefault(); initAC(); triggerPad(p.id); });
+    btn.addEventListener('touchstart', ev => { ev.preventDefault(); initAC(); triggerPad(p.id); }, { passive: false });
+    grid.appendChild(btn);
+  });
+})();
+
+// ════════════════════════════════════════════════
+// WIRE UP BUTTONS
+// ════════════════════════════════════════════════
+document.getElementById('tap-btn').addEventListener('click', tapTempo);
+document.getElementById('loop-btn').addEventListener('click', () => { initAC(); toggleLoop(); });
+document.getElementById('clear-btn').addEventListener('click', clearLoop);
+document.getElementById('metro-btn').addEventListener('click', () => { initAC(); toggleMetro(); });
+document.getElementById('cam-btn').addEventListener('click', () => {
+  if (!camActive) startCamera();
+});
+
+// ════════════════════════════════════════════════
+// BOOT
+// ════════════════════════════════════════════════
+startCamera();
+</script>
+</body>
+</html>

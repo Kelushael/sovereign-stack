@@ -1,0 +1,51 @@
+name: 🚀 Sovereign Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bundle sovereign stack
+        run: |
+          mkdir -p dist/sovereign-stack
+          cp -r axis amallo oracle nexus marshal screenwatch voice \
+                groovebox.html terminal.html oracle.py nexus.py \
+                marshal.py screenwatch.py gguf_server.py install.sh \
+                dist/sovereign-stack/ 2>/dev/null || true
+          tar -czf sovereign-stack-linux.tar.gz -C dist sovereign-stack
+          # also make a self-extracting installer
+          cat install.sh sovereign-stack-linux.tar.gz > sovereign-install-linux.run
+          chmod +x sovereign-install-linux.run
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sovereign-stack-linux.tar.gz
+            sovereign-install-linux.run
+          body: |
+            ## ⚡ Sovereign Stack
+
+            One-line install:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/Kelushael/sovereign-stack/main/install.sh | bash
+            ```
+
+            Or download `sovereign-install-linux.run` and run directly.
+
+            ### Includes
+            - `axis` — sovereign AI terminal
+            - `amallo` — local model controller
+            - `oracle` — Siri-like voice assistant
+            - `nexus` — socket mesh hub
+            - `marshal` — fleet orchestrator
+            - `groovebox.html` — offline drum machine
+            - `terminal.html` — browser terminal
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

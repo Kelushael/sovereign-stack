@@ -542,7 +542,7 @@ html,body{
 
 <script>
 // ── CONFIG ──────────────────────────────────────────────────
-const BASE        = 'https://axismundi.fun';
+const BASE        = window.location.origin.replace(/:\d+$/,'') + ':8200';
 const BRAIN_URL   = localStorage.getItem('amallo_brain')  || 'http://localhost:8100';
 const DIFF_URL    = localStorage.getItem('amallo_diff')   || 'http://localhost:8200';
 let SOV_KEY = localStorage.getItem('amallo_key') || '';

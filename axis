@@ -388,7 +388,28 @@ def cmd_model(args, session):
          usage='/models',
          desc='List available models')
 def cmd_models(args, session):
-    cmd_model('', session)
+    """List and interactively pick a model."""
+    import subprocess as _sp
+    try:
+        r = _sp.run(["ollama","list"], capture_output=True, text=True)
+        lines = [l.split()[0] for l in r.stdout.strip().splitlines()[1:] if l.split()]
+    except:
+        lines = []
+    if not lines:
+        return cmd_model('', session)
+    print(c(C.BOLD, "\navailable models:"))
+    for i,m in enumerate(lines):
+        cur = " ◀" if m == session.get("model", MODEL) else ""
+        print(f"  {i+1}. {m}{cur}")
+    try:
+        pick = input("  pick number (enter to keep current): ").strip()
+        if pick.isdigit() and 1 <= int(pick) <= len(lines):
+            chosen = lines[int(pick)-1]
+            session["model"] = chosen
+            save_session(session)
+            ok(f"switched to: {chosen}")
+    except (KeyboardInterrupt, EOFError):
+        pass
 
 @command('/chain', aliases=('/c',),
          usage='/chain',
@@ -1256,6 +1277,153 @@ def cmd_mesh(args, session):
     return '\n'.join(lines)
 
 
+TOOLS_FILE = Path.home() / '.config/amallo/axis-tools.json'
+
+def _load_tools():
+    try: return json.loads(TOOLS_FILE.read_text())
+    except: return []
+
+def _save_tools(tools):
+    TOOLS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TOOLS_FILE.write_text(json.dumps(tools, indent=2))
+
+def cmd_addtool(args, session):
+    """Register a new tool the AI can call.
+    Usage: /addtool <name> <description> | <bash_template>
+    Example: /addtool disk_usage show disk usage | df -h {path}
+    Use {arg} as placeholder for model-supplied arguments.
+    """
+    if '|' not in args:
+        return ('Usage: /addtool <name> <description> | <bash_template>\n'
+                'Example: /addtool ports list open ports | ss -tlnp\n'
+                'Example: /addtool ping check if host is up | ping -c2 {host}')
+    parts = args.split('|', 1)
+    meta, cmd_template = parts[0].strip(), parts[1].strip()
+    words = meta.split(None, 1)
+    if not words:
+        return 'need at least a name'
+    name = words[0].lower().replace('-','_')
+    desc = words[1] if len(words) > 1 else name
+
+    # extract {placeholders} as parameters
+    import re
+    params = re.findall(r'\{(\w+)\}', cmd_template)
+    props  = {p: {'type': 'string', 'description': p} for p in params}
+
+    tool = {
+        'type': 'function',
+        'function': {
+            'name': name,
+            'description': desc,
+            'cmd_template': cmd_template,
+            'parameters': {
+                'type': 'object',
+                'properties': props if props else {'input': {'type': 'string', 'description': 'optional input'}},
+                'required': params
+            }
+        }
+    }
+    tools = _load_tools()
+    tools = [t for t in tools if t['function']['name'] != name]  # replace if exists
+    tools.append(tool)
+    _save_tools(tools)
+    example = cmd_template
+    for p in params: example = example.replace(f'{{{p}}}', f'<{p}>')
+    return (f'✅ tool \033[1m{name}\033[0m registered\n'
+            f'   desc: {desc}\n'
+            f'   runs: {example}\n'
+            f'   total tools: {len(tools)}  (AI will use these on next query)')
+
+def cmd_list_tools(args, session):
+    """List all registered AI tools."""
+    tools = _load_tools()
+    # built-in tools always present
+    builtins = ['bash', 'read_file', 'write_file', 'http_get']
+    lines = ['\n\033[1mbuilt-in tools:\033[0m']
+    for b in builtins: lines.append(f'  ⚙  {b}')
+    if tools:
+        lines.append('\n\033[1mcustom tools:\033[0m')
+        for t in tools:
+            fn = t['function']
+            lines.append(f'  ⚙  {fn["name"]:20s} — {fn["description"]}')
+            lines.append(f'     runs: {fn["cmd_template"]}')
+    else:
+        lines.append('\n\033[2m  no custom tools yet — use /addtool to add\033[0m')
+    lines.append(f'\n\033[2m  stored at: {TOOLS_FILE}\033[0m')
+    return '\n'.join(lines)
+
+
+CMDS_FILE = Path.home() / '.config/amallo/axis-cmds.json'
+
+def _load_cmds():
+    try: return json.loads(CMDS_FILE.read_text())
+    except: return {}
+
+def _save_cmds(cmds):
+    CMDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CMDS_FILE.write_text(json.dumps(cmds, indent=2))
+
+def _register_saved_cmds():
+    for name, meta in _load_cmds().items():
+        slash = f'/{name}' if not name.startswith('/') else name
+        def _fn(args, session, _cmd=meta['cmd'], _desc=meta['desc']):
+            result = subprocess.run(_cmd.replace('{args}', args), shell=True,
+                                    capture_output=True, text=True)
+            out = (result.stdout + result.stderr).strip()
+            if out: print(out)
+            return out
+        COMMANDS[slash] = {'fn': _fn, 'usage': f'{slash} [args]', 'desc': meta['desc']}
+
+
+def cmd_createcmd(args, session):
+    """Interactive command builder. Just answer 3 questions."""
+    print("\n[1m/createcmd — build a new axis command[0m")
+    try:
+        name = input("  name (no slash): ").strip().lstrip('/')
+        if not name: return "cancelled"
+        desc = input("  what does it do (one line): ").strip()
+        cmd  = input("  bash command (use {args} for user input): ").strip()
+        if not cmd: return "cancelled"
+        # save it
+        cmds = _load_cmds()
+        cmds[name] = {"desc": desc, "cmd": cmd}
+        _save_cmds(cmds)
+        _register_saved_cmds()
+        print(f"\n[32m✅ /{name} created[0m")
+        print(f"   desc: {desc}")
+        print(f"   runs: {cmd}")
+        print(f"\n   try it: /{name}")
+        return ""
+    except (KeyboardInterrupt, EOFError):
+        return "cancelled"
+
+
+def cmd_addcmd_new(args, session):
+    """Add a custom slash command. Usage: /addcmd <name> <description> | <bash command>
+    Example: /addcmd status show system status | uptime && free -h
+    Use {args} as placeholder for user-supplied arguments.
+    """
+    if not args.strip():
+        cmds = _load_cmds()
+        if not cmds:
+            return "no custom commands yet.\n  usage: /addcmd <name> <description> | <bash>"
+        lines = ["\ncustom commands:"]
+        for n,m in cmds.items():
+            lines.append("  /{:<20s} — {}  runs: {}".format(n, m["desc"], m["cmd"]))
+        return "\n".join(lines)
+    if "|" not in args:
+        return "usage: /addcmd <name> <description> | <bash>\nexample: /addcmd ports show open ports | ss -tlnp"
+    meta, cmd = args.split("|", 1)
+    parts = meta.strip().split(None, 1)
+    if not parts: return "need a name"
+    name = parts[0].lstrip("/")
+    desc = parts[1].strip() if len(parts) > 1 else name
+    cmds = _load_cmds()
+    cmds[name] = {"desc": desc, "cmd": cmd.strip()}
+    _save_cmds(cmds)
+    _register_saved_cmds()
+    return f"✅ /{name} registered — {desc}\n   runs: {cmd.strip()}"
+
 _new_cmds = [
     ('/ls',       'List directory contents',       '/ls [path] [--depth N]',         cmd_ls),
     ('/cat',      'Read file contents',             '/cat <file> [--offset N] [--lines N]', cmd_cat),
@@ -1277,9 +1445,15 @@ _new_cmds = [
     ('/addnode',  'Add sovereign node to mesh',      '/addnode <ip> [user]',                   cmd_addnode),
     ('/ssh',      'SSH into any mesh node (keyless)', '/ssh <node|ip> [command]',               cmd_mesh_ssh),
     ('/mesh',     'Sovereign mesh status + deploy',  '/mesh [status|nodes]',                   cmd_mesh),
+    ('/createcmd','Build new command interactively', '/createcmd',                             cmd_createcmd),
+    ('/addcmd',   'Add custom slash command',        '/addcmd <name> <desc> | <cmd>',          cmd_addcmd_new),
+    ('/addtool',  'Register a tool for AI to call',  '/addtool <name> <desc> <cmd_template>',  cmd_addtool),
+    ('/tools',    'List registered AI tools',        '/tools',                                  cmd_list_tools),
 ]
 for _name, _desc, _usage, _fn in _new_cmds:
     COMMANDS[_name] = {'fn': _fn, 'usage': _usage, 'desc': _desc}
+
+_register_saved_cmds()  # load user-defined commands
 
 # ── DISPATCH SLASH COMMAND ────────────────────────────────────────────────────
 def dispatch(text, session):
@@ -1631,3 +1805,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# ── /addcmd — register custom slash commands with description ─────────────────

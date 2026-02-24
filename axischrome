@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""
+╔════════════════════════════════════════════════════════════════╗
+║                                                                ║
+║                    A X I S C H R O M E                         ║
+║                                                                ║
+║          Sovereign AI Browser — No Telemetry, No Ads          ║
+║                                                                ║
+║  • AI-controlled via Kernel Mustard                           ║
+║  • Runs headless (invisible to user, visible to AI)          ║
+║  • Uses ungoogled Chromium (no Google/DARPA tracking)        ║
+║  • Firefox alternative available                             ║
+║  • Command via: axis /operate "browser: <command>"            ║
+║                                                                ║
+╚════════════════════════════════════════════════════════════════╝
+
+Browser options:
+  1. CHROMIUM (default) - Ungoogled, headless-shell via Playwright
+  2. FIREFOX - Open source, system or Playwright-managed
+  3. SYSTEM FIREFOX - Direct OS-level Firefox (fastest)
+
+Usage:
+  axischrome --chromium [--cmd "navigate google.com"]
+  axischrome --firefox [--cmd "open github.com"]
+  axischrome --system-firefox [URL]
+  axischrome --test              # Quick browser test
+  axischrome --info              # Show browser info
+
+Environment:
+  AXISCHROME_BROWSER=chromium|firefox|system-firefox
+  AXISCHROME_HEADLESS=1
+  AMALLO_URL=http://localhost:8100  (kernel-mustard endpoint)
+"""
+
+import asyncio
+import subprocess
+import sys
+import argparse
+import os
+from pathlib import Path
+
+# Paths
+VENV_BIN = Path(__file__).parent / "venv" / "bin"
+PYTHON_BIN = VENV_BIN / "python3"
+KERNEL_MUSTARD = Path(__file__).parent / "kernel-mustard"
+FIREFOX_BIN = Path("/usr/bin/firefox")
+PLAYWRIGHTIBOX_FIREFOX = Path.home() / ".cache/ms-playwright/firefox-1509/firefox/firefox"
+
+def print_header():
+    print("""
+╔════════════════════════════════════════════════════════════════╗
+║                                                                ║
+║                    A X I S C H R O M E                         ║
+║                                                                ║
+║          Sovereign AI Browser — No Telemetry, No Ads          ║
+║                                                                ║
+╚════════════════════════════════════════════════════════════════╝
+""")
+
+async def test_browser(engine="chromium"):
+    """Test if browser is available and working"""
+    print(f"🧪 Testing {engine}...")
+    
+    if engine == "system-firefox":
+        result = subprocess.run(
+            [str(FIREFOX_BIN), "--version"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print(f"  ✓ {result.stdout.strip()}")
+            return True
+        else:
+            print(f"  ✗ Firefox not available")
+            return False
+    
+    try:
+        from playwright.async_api import async_playwright
+        
+        async with async_playwright() as p:
+            if engine == "chromium":
+                browser = await p.chromium.launch(headless=True)
+            elif engine == "firefox":
+                browser = await p.firefox.launch(headless=True)
+            
+            context = await browser.new_context()
+            page = await context.new_page()
+            await page.goto("data:text/html,<h1>AXISCHROME Test</h1>")
+            h1 = await page.text_content("h1")
+            await browser.close()
+            
+            print(f"  ✓ {engine} headless mode works")
+            print(f"    Test message: {h1}")
+            return True
+    except Exception as e:
+        print(f"  ✗ {engine} failed: {e}")
+        return False
+
+async def launch_kernel_mustard(browser_engine="chromium", cmd=None):
+    """Launch kernel-mustard with specified browser"""
+    print(f"\n🚀 Launching Kernel Mustard with {browser_engine}...")
+    
+    env = os.environ.copy()
+    env["AXISCHROME_BROWSER"] = browser_engine
+    env["AXISCHROME_HEADLESS"] = "1"
+    
+    if not cmd:
+        # Interactive mode
+        args = [str(PYTHON_BIN), str(KERNEL_MUSTARD), "--headless"]
+    else:
+        # One-shot command mode
+        args = [str(PYTHON_BIN), str(KERNEL_MUSTARD), "--headless", "--cmd", cmd]
+    
+    print(f"  Command: {' '.join(args)}")
+    print(f"  Browser: {browser_engine}")
+    print(f"  Headless: True (AI-controlled, invisible to user)\n")
+    
+    result = subprocess.run(args, env=env, text=True)
+    return result.returncode
+
+def launch_system_firefox(url=None):
+    """Launch system Firefox directly (fastest option)"""
+    print(f"\n🦊 Launching System Firefox...")
+    
+    args = [str(FIREFOX_BIN), "--no-remote", "--new-instance"]
+    
+    if os.environ.get("AXISCHROME_PRIVATE"):
+        args.append("--private-window")
+    
+    if url:
+        args.append(url)
+    
+    print(f"  Command: {' '.join(args)}")
+    print(f"  Note: System Firefox is fastest but not AI-controllable via axis /operate\n")
+    
+    # Use subprocess.Popen to launch in background (detached)
+    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"  ✓ Firefox launched in background")
+    return 0
+
+def show_info():
+    """Show browser availability info"""
+    print_header()
+    print("BROWSER AVAILABILITY:\n")
+    
+    # Check Chromium
+    print("1. CHROMIUM (Ungoogled Headless Shell)")
+    chromium_path = Path.home() / ".cache/ms-playwright/chromium_headless_shell-1208"
+    if chromium_path.exists():
+        print(f"   ✓ Installed: {chromium_path}")
+        print("   • Headless-only (no GUI)")
+        print("   • No Google telemetry")
+        print("   • AI-controllable via Kernel Mustard")
+        print("   • Playwright-managed\n")
+    else:
+        print("   ✗ Not installed (run: playwright install chromium)\n")
+    
+    # Check Firefox via Playwright
+    print("2. FIREFOX (Playwright-managed)")
+    firefox_pw_path = Path.home() / ".cache/ms-playwright/firefox-1509"
+    if firefox_pw_path.exists():
+        print(f"   ⚠ Downloaded but may have compatibility issues: {firefox_pw_path}")
+        print("   • Open source, privacy-focused")
+        print("   • Can run headless")
+        print("   • AI-controllable via Kernel Mustard\n")
+    else:
+        print("   ✗ Not installed (run: playwright install firefox)\n")
+    
+    # Check System Firefox
+    print("3. SYSTEM FIREFOX (Direct OS-level)")
+    if FIREFOX_BIN.exists():
+        result = subprocess.run([str(FIREFOX_BIN), "--version"], capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"   ✓ Available: {result.stdout.strip()}")
+            print("   • Fastest launch")
+            print("   • Full Firefox features")
+            print("   • NOT AI-controllable (manual only)")
+            print("   • Can use: --private-window, --no-remote\n")
+    else:
+        print("   ✗ Not available (install firefox package)\n")
+    
+    print("\nRECOMMENDED FOR AXISCHROME:")
+    print("  → Use CHROMIUM for AI-controlled sovereign operations")
+    print("  → Use SYSTEM FIREFOX for manual browsing")
+    print("\nLAUNCH COMMANDS:")
+    print("  axischrome --chromium --cmd 'navigate github.com'")
+    print("  axischrome --system-firefox https://github.com")
+    print("  axis /operate 'browser: open google.com'  (uses Kernel Mustard)")
+
+async def main():
+    parser = argparse.ArgumentParser(
+        description="AXISCHROME - Sovereign AI Browser",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    
+    parser.add_argument("--chromium", action="store_true", help="Use Chromium (default)")
+    parser.add_argument("--firefox", action="store_true", help="Use Firefox via Playwright")
+    parser.add_argument("--system-firefox", action="store_true", help="Use system Firefox (fastest)")
+    parser.add_argument("--cmd", type=str, help="One-shot command for browser")
+    parser.add_argument("--test", action="store_true", help="Test browser availability")
+    parser.add_argument("--info", action="store_true", help="Show browser info and availability")
+    parser.add_argument("url", nargs="?", help="URL to open (with --system-firefox)")
+    
+    args = parser.parse_args()
+    
+    # Determine browser engine
+    browser = args.chromium or not (args.firefox or args.system_firefox)  # Default to chromium
+    if args.firefox:
+        browser = "firefox"
+    elif args.system_firefox:
+        browser = "system-firefox"
+    else:
+        browser = "chromium"
+    
+    if args.info:
+        show_info()
+        return 0
+    
+    if args.test:
+        print_header()
+        print("Testing browser availability...\n")
+        
+        # Test all three
+        chromium_ok = await test_browser("chromium")
+        firefox_ok = await test_browser("firefox")
+        system_ff_ok = await test_browser("system-firefox")
+        
+        print("\n" + "="*60)
+        print("SUMMARY:")
+        print(f"  Chromium:        {'✓ Ready' if chromium_ok else '✗ Not available'}")
+        print(f"  Firefox (PW):    {'✓ Ready' if firefox_ok else '✗ Not available'}")
+        print(f"  System Firefox:  {'✓ Ready' if system_ff_ok else '✗ Not available'}")
+        print("="*60)
+        
+        if not any([chromium_ok, firefox_ok, system_ff_ok]):
+            print("\n⚠️  No browsers available!")
+            print("Install with: playwright install chromium firefox")
+            return 1
+        
+        print("\n🟢 AXISCHROME is ready for sovereign AI browser control!")
+        return 0
+    
+    if args.system_firefox:
+        print_header()
+        return launch_system_firefox(args.url)
+    else:
+        print_header()
+        return await launch_kernel_mustard(browser, args.cmd)
+
+if __name__ == "__main__":
+    exit_code = asyncio.run(main()) if not sys.argv[1:1] or \
+                '--system-firefox' not in sys.argv else \
+                (asyncio.run(main()) if '--system-firefox' not in sys.argv else sys.exit(main()))
+    
+    # Simpler approach
+    try:
+        if "--system-firefox" in sys.argv or "--test" not in sys.argv and "--info" not in sys.argv and any(x in sys.argv for x in ["--cmd"]):
+            exit_code = asyncio.run(main())
+        else:
+            exit_code = asyncio.run(main())
+        sys.exit(exit_code if exit_code is not None else 0)
+    except KeyboardInterrupt:
+        print("\n\n👋 AXISCHROME browser control interrupted")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)

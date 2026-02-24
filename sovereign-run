@@ -1,0 +1,212 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+#  sovereign-run <model-name>
+#
+#  Swaps the live GGUF on the Axis Mundi model node.
+#  → downloads new model while old is still serving
+#  → atomic stop → purge old → link new → start
+#  → zero config drift: service always loads /root/axis-mundi/models/current.gguf
+#
+#  Lives at: /usr/local/bin/sovereign-run  (on the model node)
+#  Deploy:   bash sovereign-stack/deploy-sovereign-run.sh
+#
+#  Usage:
+#    sovereign-run qwen-7b
+#    sovereign-run deepseek-r1-14b
+#    sovereign-run llama3-8b
+#    sovereign-run list
+# ═══════════════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+MODEL_DIR="/root/axis-mundi/models"
+CURRENT_LINK="$MODEL_DIR/current.gguf"
+CURRENT_NAME_FILE="$MODEL_DIR/.current-name"
+SERVICE="axis-model"
+LOG_FILE="/var/log/sovereign-run.log"
+
+# ── MODEL REGISTRY (bartowski Q5_K_M — best quality/size) ──────────────────
+declare -A REGISTRY
+declare -A REGISTRY_SIZE
+
+# 3B — instant responses, always-on
+REGISTRY["llama3-3b"]="https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q5_K_M.gguf"
+REGISTRY_SIZE["llama3-3b"]="~2.7GB"
+
+REGISTRY["llama3-3b-raw"]="https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-uncensored-GGUF/resolve/main/Llama-3.2-3B-Instruct-uncensored-Q5_K_M.gguf"
+REGISTRY_SIZE["llama3-3b-raw"]="~2.7GB"
+
+# 7-9B — daily workhorse
+REGISTRY["llama3-8b"]="https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf"
+REGISTRY_SIZE["llama3-8b"]="~5.7GB"
+
+REGISTRY["mistral-7b"]="https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q5_K_M.gguf"
+REGISTRY_SIZE["mistral-7b"]="~5.3GB"
+
+REGISTRY["qwen-7b"]="https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q5_K_M.gguf"
+REGISTRY_SIZE["qwen-7b"]="~5.4GB"
+
+REGISTRY["gemma2-9b"]="https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q5_K_M.gguf"
+REGISTRY_SIZE["gemma2-9b"]="~6.6GB"
+
+# Coder
+REGISTRY["qwen-coder-7b"]="https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q5_K_M.gguf"
+REGISTRY_SIZE["qwen-coder-7b"]="~5.4GB"
+
+# 14B — reasoning tier
+REGISTRY["deepseek-r1-14b"]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q5_K_M.gguf"
+REGISTRY_SIZE["deepseek-r1-14b"]="~10.4GB"
+
+REGISTRY["glm4-flash"]="https://huggingface.co/bartowski/zai-org_GLM-4.7-Flash-GGUF/resolve/main/zai-org_GLM-4.7-Flash-Q5_K_M.gguf"
+REGISTRY_SIZE["glm4-flash"]="~10.4GB"
+
+# 32B — heavy reasoning (fills ~22GB of 32GB RAM)
+REGISTRY["qwen-32b"]="https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q5_K_M.gguf"
+REGISTRY_SIZE["qwen-32b"]="~22GB"
+
+REGISTRY["qwen-coder-32b"]="https://huggingface.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-32B-Instruct-Q5_K_M.gguf"
+REGISTRY_SIZE["qwen-coder-32b"]="~22GB"
+
+# ── COLORS ──────────────────────────────────────────────────────────────────
+PINK='\033[38;2;255;105;180m'
+LIME='\033[38;2;57;255;100m'
+CYAN='\033[38;2;0;220;255m'
+GOLD='\033[38;2;255;200;50m'
+RED='\033[38;2;255;70;70m'
+GRAY='\033[38;2;85;85;105m'
+RST='\033[0m'
+BOLD='\033[1m'
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+die() { echo -e "${RED}✗  $*${RST}" >&2; log "ERROR: $*"; exit 1; }
+ok()  { echo -e "${LIME}✓  $*${RST}"; log "OK: $*"; }
+inf() { echo -e "${CYAN}→  $*${RST}"; log "INFO: $*"; }
+hdr() { echo -e "${PINK}${BOLD}$*${RST}"; }
+
+# ── LIST ────────────────────────────────────────────────────────────────────
+if [[ "${1:-}" == "list" || "${1:-}" == "" ]]; then
+    hdr "\n  SOVEREIGN MODEL REGISTRY"
+    echo -e "  ${GRAY}────────────────────────────────────────${RST}"
+    CURRENT=""
+    [[ -f "$CURRENT_NAME_FILE" ]] && CURRENT=$(cat "$CURRENT_NAME_FILE")
+    for NAME in $(echo "${!REGISTRY[@]}" | tr ' ' '\n' | sort); do
+        SIZE="${REGISTRY_SIZE[$NAME]}"
+        if [[ "$NAME" == "$CURRENT" ]]; then
+            echo -e "  ${LIME}▶  ${BOLD}$NAME${RST}  ${GRAY}$SIZE  ← active${RST}"
+        else
+            echo -e "  ${GRAY}   $NAME${RST}  ${GRAY}$SIZE${RST}"
+        fi
+    done
+    echo ""
+    exit 0
+fi
+
+MODEL_NAME="$1"
+
+# ── VALIDATE ────────────────────────────────────────────────────────────────
+[[ -v "REGISTRY[$MODEL_NAME]" ]] || die "unknown model '$MODEL_NAME' — run: sovereign-run list"
+
+URL="${REGISTRY[$MODEL_NAME]}"
+FILENAME=$(basename "$URL")
+DEST="$MODEL_DIR/$FILENAME"
+
+hdr "\n  ╔══════════════════════════════════════════╗"
+hdr "  ║  SOVEREIGN-RUN  →  $MODEL_NAME"
+hdr "  ╚══════════════════════════════════════════╝\n"
+
+log "=== sovereign-run $MODEL_NAME ==="
+mkdir -p "$MODEL_DIR"
+
+# ── CHECK IF ALREADY ACTIVE ─────────────────────────────────────────────────
+CURRENT=""
+[[ -f "$CURRENT_NAME_FILE" ]] && CURRENT=$(cat "$CURRENT_NAME_FILE")
+
+if [[ "$CURRENT" == "$MODEL_NAME" ]]; then
+    ok "already running $MODEL_NAME — nothing to do"
+    systemctl is-active --quiet "$SERVICE" && ok "$SERVICE is healthy" || {
+        inf "service was down — restarting"
+        systemctl restart "$SERVICE"
+    }
+    exit 0
+fi
+
+# ── DOWNLOAD (while old model still serves) ──────────────────────────────────
+if [[ -f "$DEST" ]]; then
+    SIZE=$(du -sh "$DEST" | cut -f1)
+    ok "already downloaded: $FILENAME ($SIZE)"
+else
+    inf "downloading $MODEL_NAME (${REGISTRY_SIZE[$MODEL_NAME]}) — old model stays live"
+    inf "source: $URL"
+    mkdir -p "$MODEL_DIR"
+    curl -L "$URL" \
+         --output "$DEST.part" \
+         --progress-bar \
+         --retry 3 \
+         --retry-delay 5 \
+         --continue-at - \
+      && mv "$DEST.part" "$DEST" \
+      || die "download failed — old model still running, no change made"
+    ok "downloaded: $FILENAME ($(du -sh "$DEST" | cut -f1))"
+fi
+
+# ── ATOMIC SWAP ──────────────────────────────────────────────────────────────
+inf "stopping $SERVICE..."
+systemctl stop "$SERVICE" 2>/dev/null || true
+
+# purge old GGUF (free the RAM and disk)
+if [[ -n "$CURRENT" ]]; then
+    OLD_FILE=""
+    for f in "$MODEL_DIR"/*.gguf; do
+        [[ "$(basename "$f")" == "$(basename "$CURRENT_LINK")" ]] && continue  # skip symlink target before swap
+        true
+    done
+
+    # resolve what the old symlink pointed to
+    if [[ -L "$CURRENT_LINK" ]]; then
+        OLD_RESOLVED=$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)
+        if [[ -n "$OLD_RESOLVED" && "$OLD_RESOLVED" != "$DEST" && -f "$OLD_RESOLVED" ]]; then
+            inf "purging old GGUF: $(basename "$OLD_RESOLVED")"
+            rm -f "$OLD_RESOLVED"
+            ok "purged"
+        fi
+    fi
+fi
+
+# point current.gguf → new model
+ln -sf "$DEST" "$CURRENT_LINK"
+echo "$MODEL_NAME" > "$CURRENT_NAME_FILE"
+ok "linked: current.gguf → $FILENAME"
+
+# ── START ────────────────────────────────────────────────────────────────────
+inf "starting $SERVICE with $MODEL_NAME..."
+systemctl start "$SERVICE"
+
+# wait for API to respond (up to 90s — large models take time to load into RAM)
+inf "waiting for model API to come up..."
+TRIES=0
+MAX=45
+until curl -sf http://127.0.0.1:8181/v1/models > /dev/null 2>&1; do
+    TRIES=$((TRIES + 1))
+    [[ $TRIES -ge $MAX ]] && die "API did not come up after ${MAX}s — check: journalctl -u $SERVICE -n 50"
+    printf "."
+    sleep 2
+done
+echo ""
+
+ok "$MODEL_NAME is live"
+echo ""
+
+# ── STATUS ────────────────────────────────────────────────────────────────────
+API_RESP=$(curl -s http://127.0.0.1:8181/v1/models 2>/dev/null)
+echo -e "  ${GOLD}active model:${RST}"
+echo "$API_RESP" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for m in d.get('data', []):
+        print(f'    id: {m[\"id\"]}')
+except:
+    print('    (could not parse /v1/models response)')
+" 2>/dev/null || true
+
+echo ""
+log "=== done: $MODEL_NAME active ==="

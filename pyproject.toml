@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sovereign-stack"
+version = "0.1.0"
+description = "SOVEREIGN STACK — Zero-config sovereign AI toolchain"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+]
+
+[project.scripts]
+sov          = "sov.__main__:main"
+sov-ide      = "sov.ide:main"
+sov-ggufwomb = "sov.ggufwomb:main"
+sov-ui       = "sov.ui:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sov*"]

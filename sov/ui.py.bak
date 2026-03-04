@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+"""
+sov --ui  →  Sovereign Preview Window  (with agent visual feedback loop)
+
+LOOP:
+  agent generates HTML
+        ↓
+  POST /push  ←── agent pushes output here
+        ↓
+  browser renders it in iframe
+        ↓
+  html2canvas captures the render as PNG
+        ↓
+  browser POSTs screenshot to /feedback
+        ↓
+  agent GETs /screenshot  ←── agent sees what user sees
+        ↓
+  agent self-corrects if misaligned
+
+Port 7071
+  GET  /            → preview window HTML
+  GET  /stream      → SSE stream of agent outputs
+  GET  /screenshot  → latest rendered screenshot (base64 JSON)
+  POST /push        → agent sends {html, text, label}
+  POST /feedback    → browser sends rendered screenshot back
+"""
+import sys, os, json, threading, time
+import http.server, socketserver, webbrowser
+from urllib.parse import urlparse
+
+PINK = "\033[38;2;255;105;180m"
+CYAN = "\033[38;2;0;220;255m"
+LIME = "\033[38;2;57;255;100m"
+GRAY = "\033[38;2;85;85;105m"
+RST  = "\033[0m"
+BOLD = "\033[1m"
+
+PORT = 7071
+
+_last_output     = {"html": "<p style='color:#4fc3f7;font-family:monospace;padding:1rem'>Waiting for agent output…</p>"}
+_last_screenshot = {"b64": None, "ts": None}   # latest render captured by browser
+_sse_clients: list = []
+_sse_lock = threading.Lock()
+
+# ── Preview Window HTML ────────────────────────────────────────────────────────
+# The browser renders agent output in an iframe, then html2canvas screenshots
+# it and POSTs the image back to /feedback so the agent can see its own output.
+
+PREVIEW_HTML = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SOV · PREVIEW</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--cyan:#00e5ff;--pink:#ff69b4;--dark:#010810;--border:rgba(0,229,255,0.2)}
+body{background:var(--dark);color:#e0f4ff;font-family:'Courier New',monospace;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+#titlebar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:.35rem 1rem;background:rgba(0,10,20,0.95);
+  border-bottom:1px solid var(--border);font-size:.58rem;
+  letter-spacing:.12em;color:var(--cyan);flex-shrink:0;
+}
+.dot{width:7px;height:7px;border-radius:50%;background:#ff69b4;
+     box-shadow:0 0 6px #ff69b4;display:inline-block;margin-right:.5rem;
+     animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.5}50%{opacity:1}}
+
+#frame{flex:1;border:none;width:100%;background:#fff}
+
+#statusbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:.22rem 1rem;border-top:1px solid var(--border);
+  font-size:.5rem;color:#3a4a5a;letter-spacing:.06em;flex-shrink:0;
+}
+#fb-dot{
+  width:5px;height:5px;border-radius:50%;background:#00ff9d;
+  box-shadow:0 0 5px #00ff9d;display:inline-block;margin-right:.4rem;
+  opacity:0;transition:opacity .3s;
+}
+#fb-dot.active{opacity:1}
+</style>
+<!-- html2canvas for rendering screenshots back to agent -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"
+        crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="titlebar">
+  <span><span class="dot"></span>SOV · PREVIEW WINDOW</span>
+  <span id="ts" style="color:#3a4a5a">—</span>
+</div>
+
+<iframe id="frame" srcdoc="" sandbox="allow-scripts allow-same-origin"></iframe>
+
+<div id="statusbar">
+  <span id="status">waiting for agent…</span>
+  <span><span id="fb-dot"></span><span id="fb-label">no feedback yet</span></span>
+</div>
+
+<script>
+const frame    = document.getElementById('frame');
+const statusEl = document.getElementById('status');
+const tsEl     = document.getElementById('ts');
+const fbDot    = document.getElementById('fb-dot');
+const fbLabel  = document.getElementById('fb-label');
+
+// ── SSE: receive agent output ──────────────────────────────────────────────
+const es = new EventSource('/stream');
+es.onmessage = e => {
+  const d = JSON.parse(e.data);
+
+  if (d.html) {
+    frame.srcdoc = d.html;
+  } else if (d.text) {
+    frame.srcdoc = `<pre style="color:#1a1a2e;background:#f8f8ff;padding:1rem;
+      font-family:'Courier New',monospace;font-size:.8rem;white-space:pre-wrap;
+      margin:0;min-height:100vh">${escHtml(d.text)}</pre>`;
+  }
+
+  statusEl.textContent = d.label || 'agent output received';
+  tsEl.textContent = new Date().toLocaleTimeString();
+
+  // Wait for iframe to render, then capture screenshot for agent feedback
+  setTimeout(() => captureAndFeedback(d.label || 'render'), 800);
+};
+es.onerror = () => { statusEl.textContent = 'stream disconnected…'; };
+
+// ── Capture rendered iframe → POST back to /feedback ──────────────────────
+function captureAndFeedback(label) {
+  // html2canvas can't cross into the iframe's shadow DOM,
+  // so we capture the parent page which shows the iframe visually.
+  html2canvas(document.body, {
+    useCORS: true,
+    allowTaint: true,
+    scale: 0.75,  // 75% scale keeps payload small
+    logging: false,
+  }).then(canvas => {
+    const b64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+    fetch('/feedback', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ b64, label, ts: Date.now() })
+    }).then(() => {
+      fbDot.classList.add('active');
+      fbLabel.textContent = `feedback sent · ${new Date().toLocaleTimeString()}`;
+      setTimeout(() => fbDot.classList.remove('active'), 1200);
+    }).catch(() => {});
+  }).catch(() => {});
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>"""
+
+
+# ── HTTP Handler ───────────────────────────────────────────────────────────────
+class UIHandler(http.server.BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            self._send(200, "text/html", PREVIEW_HTML.encode())
+        elif path == "/stream":
+            self._sse()
+        elif path == "/screenshot":
+            # Agent calls this to see what it built
+            data = json.dumps(_last_screenshot).encode()
+            self._send(200, "application/json", data)
+        else:
+            self._send(404, "text/plain", b"not found")
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+
+        if path == "/push":
+            # Agent pushes HTML/text output for preview
+            try:
+                data = json.loads(body)
+                _last_output.update(data)
+                _broadcast(data)
+                self._send(200, "application/json", b'{"ok":true}')
+            except Exception:
+                self._send(400, "text/plain", b"bad json")
+
+        elif path == "/feedback":
+            # Browser sends back rendered screenshot
+            try:
+                data = json.loads(body)
+                _last_screenshot["b64"] = data.get("b64")
+                _last_screenshot["ts"]  = data.get("ts")
+                _last_screenshot["label"] = data.get("label", "")
+                self._send(200, "application/json", b'{"ok":true}')
+            except Exception:
+                self._send(400, "text/plain", b"bad json")
+
+        else:
+            self._send(404, "text/plain", b"not found")
+
+    def _send(self, code, ct, body):
+        self.send_response(code)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", len(body))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type",  "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        queue: list = []
+        with _sse_lock:
+            _sse_clients.append(queue)
+        try:
+            # Send current state immediately on connect
+            msg = json.dumps(_last_output)
+            self.wfile.write(f"data: {msg}\n\n".encode())
+            self.wfile.flush()
+            while True:
+                time.sleep(0.08)
+                with _sse_lock:
+                    if queue:
+                        item = queue.pop(0)
+                        msg  = json.dumps(item)
+                        self.wfile.write(f"data: {msg}\n\n".encode())
+                        self.wfile.flush()
+        except Exception:
+            pass
+        finally:
+            with _sse_lock:
+                try: _sse_clients.remove(queue)
+                except ValueError: pass
+
+    def log_message(self, *_): pass
+
+
+def _broadcast(data: dict):
+    with _sse_lock:
+        for q in _sse_clients:
+            q.append(data)
+
+
+# ── Agent-callable helpers ─────────────────────────────────────────────────────
+
+def push(html: str = None, text: str = None, label: str = "agent output") -> bool:
+    """
+    Push agent-generated content to the preview window.
+    Returns True if preview window is running, False if not (silent).
+    """
+    import requests as _r
+    payload = {"label": label}
+    if html: payload["html"] = html
+    if text: payload["text"] = text
+    try:
+        _r.post(f"http://localhost:{PORT}/push", json=payload, timeout=1)
+        return True
+    except Exception:
+        return False
+
+
+def get_screenshot(wait: float = 1.2) -> str | None:
+    """
+    Get the latest rendered screenshot the browser captured after last push.
+    Returns base64 JPEG string, or None if not available.
+    Call this after push() + a short delay to let the browser render + capture.
+
+    Usage in agent tool:
+        push(html=my_html, label="login form v2")
+        time.sleep(1.5)
+        b64 = get_screenshot()
+        # include b64 in next agent message as vision context
+    """
+    import requests as _r
+    try:
+        time.sleep(wait)
+        r = _r.get(f"http://localhost:{PORT}/screenshot", timeout=2)
+        data = r.json()
+        return data.get("b64")
+    except Exception:
+        return None
+
+
+def preview_and_see(html: str, label: str = "agent render") -> dict:
+    """
+    Full feedback loop:
+      1. Push HTML to preview window (user sees it)
+      2. Wait for browser to render + auto-capture screenshot
+      3. Return {"html": ..., "screenshot_b64": ..., "label": ...}
+
+    The screenshot_b64 should be included in the next agent message
+    as a vision attachment so the agent sees exactly what the user sees.
+    """
+    pushed = push(html=html, label=label)
+    if not pushed:
+        return {"html": html, "screenshot_b64": None, "label": label,
+                "error": "preview window not running"}
+    b64 = get_screenshot(wait=1.5)
+    return {
+        "html": html,
+        "screenshot_b64": b64,
+        "label": label,
+        "preview_url": f"http://localhost:{PORT}",
+    }
+
+
+# ── Server entry point ─────────────────────────────────────────────────────────
+
+def main(open_browser: bool = True):
+    print(f"\n{PINK}{BOLD}  ╔══════════════════════════════════════════════╗")
+    print(f"  ║  SOV --UI  ·  PREVIEW WINDOW                ║")
+    print(f"  ╚══════════════════════════════════════════════╝{RST}\n")
+    print(f"  {LIME}✓{RST}  Preview    : http://localhost:{PORT}")
+    print(f"  {LIME}✓{RST}  Push API   : POST /push   {{html, text, label}}")
+    print(f"  {LIME}✓{RST}  Screenshot : GET  /screenshot  (agent feedback)")
+    print(f"  {LIME}✓{RST}  Feedback   : POST /feedback  (browser → agent)")
+    print(f"  {GRAY}    Agent sees what user sees — visual grounding active")
+    print(f"    Ctrl+C to stop{RST}\n")
+
+    if open_browser:
+        def _open():
+            time.sleep(0.5)
+            webbrowser.open(f"http://localhost:{PORT}")
+        threading.Thread(target=_open, daemon=True).start()
+
+    class ReuseTCP(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    with ReuseTCP(("", PORT), UIHandler) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print(f"\n  {GRAY}[sov-ui] stopped.{RST}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+PREVIEW_HTML = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SOV · PREVIEW</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--cyan:#00e5ff;--pink:#ff69b4;--dark:#010810;--border:rgba(0,229,255,0.2)}
+body{background:var(--dark);color:#e0f4ff;font-family:'Courier New',monospace;height:100vh;display:flex;flex-direction:column}
+#titlebar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:.4rem 1rem;
+  background:rgba(0,10,20,0.9);
+  border-bottom:1px solid var(--border);
+  font-size:.6rem;letter-spacing:.12em;color:var(--cyan);
+  flex-shrink:0;
+}
+#titlebar .dot{width:7px;height:7px;border-radius:50%;background:#ff69b4;box-shadow:0 0 6px #ff69b4;display:inline-block;margin-right:.5rem;animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.6}50%{opacity:1}}
+#frame{flex:1;border:none;width:100%;background:transparent}
+#status{
+  padding:.25rem 1rem;font-size:.52rem;color:#4a5568;letter-spacing:.08em;
+  border-top:1px solid var(--border);flex-shrink:0;
+}
+</style>
+</head>
+<body>
+<div id="titlebar">
+  <span><span class="dot"></span>SOV · PREVIEW WINDOW</span>
+  <span id="ts" style="color:#4a5568">—</span>
+</div>
+<iframe id="frame" srcdoc=""></iframe>
+<div id="status">waiting for agent…</div>
+<script>
+const frame = document.getElementById('frame');
+const status = document.getElementById('status');
+const ts = document.getElementById('ts');
+
+const es = new EventSource('/stream');
+es.onmessage = e => {
+  const d = JSON.parse(e.data);
+  if(d.html){ frame.srcdoc = d.html; }
+  if(d.text){ frame.srcdoc = `<pre style="color:#e0f4ff;background:#010810;padding:1rem;font-family:'Courier New',monospace;font-size:.75rem;white-space:pre-wrap">${d.text}</pre>`; }
+  status.textContent = d.label || 'agent output received';
+  ts.textContent = new Date().toLocaleTimeString();
+};
+es.onerror = () => { status.textContent = 'stream disconnected — retrying…'; };
+</script>
+</body>
+</html>"""
+
+
+class UIHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path == "/" or path == "/index.html":
+            self._send(200, "text/html", PREVIEW_HTML.encode())
+        elif path == "/stream":
+            self._sse()
+        else:
+            self._send(404, "text/plain", b"not found")
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/push":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                data = json.loads(body)
+                _last_output.update(data)
+                _broadcast(data)
+                self._send(200, "application/json", b'{"ok":true}')
+            except Exception:
+                self._send(400, "text/plain", b"bad json")
+        else:
+            self._send(404, "text/plain", b"not found")
+
+    def _send(self, code, ct, body):
+        self.send_response(code)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", len(body))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        queue: list = []
+        with _sse_lock:
+            _sse_clients.append(queue)
+        # send current state immediately
+        try:
+            msg = json.dumps(_last_output)
+            self.wfile.write(f"data: {msg}\n\n".encode())
+            self.wfile.flush()
+            while True:
+                time.sleep(0.1)
+                with _sse_lock:
+                    if queue:
+                        item = queue.pop(0)
+                        msg = json.dumps(item)
+                        self.wfile.write(f"data: {msg}\n\n".encode())
+                        self.wfile.flush()
+        except Exception:
+            pass
+        finally:
+            with _sse_lock:
+                try: _sse_clients.remove(queue)
+                except ValueError: pass
+
+    def log_message(self, *_): pass
+
+
+def _broadcast(data: dict):
+    with _sse_lock:
+        for q in _sse_clients:
+            q.append(data)
+
+
+def push(html: str = None, text: str = None, label: str = "agent output"):
+    """Call this from sov-cli / sov-ide to push content to the preview window."""
+    import requests as _r
+    payload = {"label": label}
+    if html: payload["html"] = html
+    if text: payload["text"] = text
+    try:
+        _r.post(f"http://localhost:{PORT}/push", json=payload, timeout=1)
+    except Exception:
+        pass  # UI not running — silent fail
+
+
+def main(open_browser=True):
+    print(f"\n{PINK}{BOLD}  ╔══════════════════════════════════════════════╗")
+    print(f"  ║  SOV --UI  ·  PREVIEW WINDOW                ║")
+    print(f"  ╚══════════════════════════════════════════════╝{RST}\n")
+    print(f"  {LIME}✓{RST}  Preview  : http://localhost:{PORT}")
+    print(f"  {LIME}✓{RST}  Push API : POST http://localhost:{PORT}/push")
+    print(f"  {GRAY}    Ctrl+C to stop{RST}\n")
+
+    if open_browser:
+        def _open():
+            time.sleep(0.5)
+            webbrowser.open(f"http://localhost:{PORT}")
+        threading.Thread(target=_open, daemon=True).start()
+
+    class ReuseTCP(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    with ReuseTCP(("", PORT), UIHandler) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print(f"\n  {GRAY}[sov-ui] stopped.{RST}")
+
+
+if __name__ == "__main__":
+    main()

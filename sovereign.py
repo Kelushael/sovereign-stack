@@ -25,34 +25,41 @@ SPEC_FILE = f"{_cfg}/specialties.json"
 SELF      = os.path.abspath(__file__)
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
+ORG  = "\033[38;2;255;120;0m"
+ORG2 = "\033[38;2;255;180;0m"
+ORG3 = "\033[38;2;255;60;0m"
+YEL  = "\033[38;2;255;240;0m"
 PINK = "\033[38;2;255;105;180m"
 LIME = "\033[38;2;57;255;100m"
 CYAN = "\033[38;2;0;220;255m"
 GOLD = "\033[38;2;255;200;50m"
-GRAY = "\033[38;2;85;85;105m"
+GRAY = "\033[38;2;80;50;20m"
 RED  = "\033[38;2;255;70;70m"
+WHT  = "\033[38;2;255;250;240m"
 RST  = "\033[0m"
 BOLD = "\033[1m"
+DIM  = "\033[38;2;40;25;10m"
 
 BANNER = (
-    f"\n{PINK}{BOLD}"
+    f"\n{ORG3}{BOLD}"
     f"  ╔══════════════════════════════════════════╗\n"
-    f"  ║  SOVEREIGN  ·  AXIS MUNDI               ║\n"
-    f"  ║  zero local compute  ·  your cloud      ║\n"
+    f"  ║  {ORG2}SOVEREIGN{ORG3}  ·  {YEL}AXIS MUNDI{ORG3}             ║\n"
+    f"  ║  {GRAY}zero local compute  ·  your cloud{ORG3}      ║\n"
     f"  ╚══════════════════════════════════════════╝"
     f"{RST}"
 )
 
 # ── SPINNER ───────────────────────────────────────────────────────────────────
+_SPIN_FRAMES = "▙▛▜▟▙▛▜▟"
 class Spin:
     def __init__(self, msg=""):
         self.msg = msg; self._stop = False
         self._t = threading.Thread(target=self._run, daemon=True)
     def _run(self):
-        for f in itertools.cycle("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"):
+        for f in itertools.cycle(_SPIN_FRAMES):
             if self._stop: break
-            sys.stdout.write(f"\r  {CYAN}{f}{RST}  {self.msg}   ")
-            sys.stdout.flush(); time.sleep(0.1)
+            sys.stdout.write(f"\r  {ORG}{f}{RST}  {ORG2}{self.msg}{RST}   ")
+            sys.stdout.flush(); time.sleep(0.08)
     def __enter__(self): self._t.start(); return self
     def __exit__(self, *_):
         self._stop = True; self._t.join()
@@ -389,16 +396,20 @@ def shell(token):
 
     def print_banner():
         print(BANNER)
-        spesh_tag = (f"  {GOLD}specialty:{RST} {active_specialty}\n" if active_specialty else "")
-        print(f"\n  {GRAY}cloud:{RST}  {CYAN}{SERVER}{RST}   {GRAY}model:{RST}  {LIME}{MODEL}{RST}")
+        spesh_tag = (f"  {ORG2}specialty:{RST} {YEL}{active_specialty}{RST}\n" if active_specialty else "")
+        print(f"\n  {GRAY}cloud :{RST}  {ORG}{SERVER}{RST}   {GRAY}model:{RST}  {ORG2}{MODEL}{RST}")
         if spesh_tag: print(spesh_tag, end="")
 
         all_keys = list(cmds) + list(tools) + list(specs)
         if all_keys:
-            items = "  ".join(f"{LIME}/{k}{RST}" for k in all_keys)
-            print(f"  {GRAY}yours:{RST}  {items}")
+            items = "  ".join(f"{YEL}/{k}{RST}" for k in all_keys)
+            print(f"  {GRAY}yours :{RST}  {items}")
 
-        print(f"  {GRAY}meta:{RST}   /  (menu)  /run  /addcmd  /addtool  /addspecialty  /spesh  exit\n")
+        print(f"  {GRAY}meta  :{RST}   {DIM}/{RST}  (menu)  /run  /addcmd  /addtool  /addspecialty  /spesh  /preview  exit\n")
+        # arcade scanline
+        import shutil as _sh
+        w = min(_sh.get_terminal_size((80,24)).columns, 100)
+        print(f"  {ORG3}{'▄' * (w - 4)}{RST}\n")
 
     print_banner()
 
@@ -406,8 +417,8 @@ def shell(token):
     except: pass
 
     while True:
-        spesh_label = f"{GOLD}[{active_specialty}]{RST} " if active_specialty else ""
-        prompt_str  = f"{spesh_label}{PINK}{BOLD}sovereign{RST}{GRAY}@axis ›{RST} "
+        spesh_label = f"{ORG3}[{active_specialty}]{RST} " if active_specialty else ""
+        prompt_str  = f"{spesh_label}{ORG}{BOLD}▶{RST} {ORG2}amallo{RST}{GRAY}@{RST}{ORG}sov{RST} {YEL}»{RST} "
 
         try:
             msg = input(prompt_str).strip()
@@ -498,6 +509,13 @@ def shell(token):
         if msg.startswith("/addcmd"):
             cmds = handle_addcmd(msg, cmds); continue
 
+        # ── /preview ───────────────────────────────────────────────────────
+        # Push any HTML block from last reply into sov --ui preview window
+        # and feed the rendered screenshot back into agent context
+        if msg.lower().startswith("/preview"):
+            _do_preview(history, msg)
+            continue
+
         # ── /addtool ───────────────────────────────────────────────────────
         if msg.startswith("/addtool"):
             tools = handle_addtool(msg, tools); continue
@@ -524,17 +542,26 @@ def shell(token):
         if expanded is not None:
             msg = expanded
         elif msg.startswith("/"):
-            # fuzzy match — suggest correction
             word = re.match(r'^/(\w[\w-]*)', msg)
             if word:
                 suggestion = fuzzy_suggest(word.group(1), cmds, tools, specs)
                 if suggestion:
-                    print(f"\n  {GRAY}did you mean:{RST}  {LIME}/{suggestion}{RST} ?\n")
+                    print(f"\n  {GRAY}did you mean:{RST}  {YEL}/{suggestion}{RST} ?\n")
                     continue
 
         # ── send to model ──────────────────────────────────────────────────
+        import shutil as _sh
+        _w = min(_sh.get_terminal_size((80,24)).columns, 100)
+        _bar = f"{ORG3}{'─' * (_w - 2)}{RST}"
+        print(f"\n{_bar}")
+        print(f"  {ORG}◈{RST}  {ORG2}{BOLD}AMALLO{RST}  {GRAY}thinking…{RST}")
+        print(f"{_bar}\n")
         history, reply = run_agent(msg, token, tools, history)
-        print(f"\n{fmt(reply)}\n" if reply else f"\n{RED}  no response{RST}\n")
+        if reply:
+            print(fmt(reply))
+            print(f"\n{ORG3}{'▀' * (_w - 2)}{RST}\n")
+        else:
+            print(f"\n{RED}  no response{RST}\n")
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
